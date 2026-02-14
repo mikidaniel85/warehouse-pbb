@@ -2,38 +2,31 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
-
 import json
-
-import json
-
-# התחברות ל-Firebase (גרסה חסינת תקלות - מקומי וענן)
-if not firebase_admin._apps:
-    try:
-        # נסה לטעון מהסודות של הענן (Streamlit Cloud)
-        # אם אנחנו במחשב מקומי בלי סודות - השורה הזו תיכשל ותעבור ל-except
-        if "firebase" in st.secrets:
-            key_dict = dict(st.secrets["firebase"])
-            
-            # תיקון ירידות שורה במפתח הפרטי
-            if "private_key" in key_dict:
-                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
-            
-            cred = credentials.Certificate(key_dict)
-        else:
-            # מקרה נדיר: יש קובץ סודות אבל אין בו את הפיירבייס
-            cred = credentials.Certificate("serviceAccountKey.json")
-            
-    except Exception:
-        # אנחנו במחשב מקומי רגיל (אין קובץ סודות בכלל)
-        # אז נטען את הקובץ המקומי
-        cred = credentials.Certificate("serviceAccountKey.json")
-
-    firebase_admin.initialize_app(cred)
-
 
 # הגדרות תצוגה
 st.set_page_config(page_title="ניהול מלאי שרוולים", layout="centered")
+
+# --- 1. התחברות ל-Firebase (החלק המתוקן) ---
+if not firebase_admin._apps:
+    try:
+        # בדיקה אם אנחנו בענן (Streamlit Cloud)
+        if "firebase" in st.secrets:
+            key_dict = dict(st.secrets["firebase"])
+            # תיקון ירידות שורה במפתח
+            if "private_key" in key_dict:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+            cred = credentials.Certificate(key_dict)
+        else:
+            # אנחנו במחשב מקומי
+            cred = credentials.Certificate("serviceAccountKey.json")
+            
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"שגיאה בהתחברות ל-Firebase: {e}")
+
+# --- חשוב מאוד: השורה הזו חייבת להיות כאן, מחוץ ל-if ---
+db = firestore.client()
 
 # --- זיכרון משתמש ---
 if 'logged_in' not in st.session_state:
@@ -47,9 +40,8 @@ if 'edit_item_id' not in st.session_state:
 if 'active_action' not in st.session_state:
     st.session_state['active_action'] = None
 
-# --- פונקציית לוגים (חדש!) ---
+# --- פונקציית לוגים ---
 def log_action(action, details):
-    """רישום פעולה בהיסטוריה"""
     db.collection("Logs").add({
         "timestamp": datetime.now(),
         "user": st.session_state['user_email'],
@@ -73,7 +65,7 @@ def get_pending_requests_count():
     except:
         return 0
 
-def get_pending_users_count(): # חדש!
+def get_pending_users_count():
     try:
         return len(list(db.collection("Users").where("approved", "==", False).stream()))
     except:
@@ -87,6 +79,7 @@ if not st.session_state['logged_in']:
         email = st.text_input("אימייל", key="login_email")
         pw = st.text_input("סיסמה", type="password", key="login_pw")
         if st.button("התחבר", use_container_width=True):
+            # כאן הייתה השגיאה שלך - עכשיו db בטוח קיים
             user_doc = db.collection("Users").document(email).get()
             if user_doc.exists:
                 u_data = user_doc.to_dict()
@@ -112,7 +105,6 @@ if not st.session_state['logged_in']:
 
 # --- אפליקציה ראשית ---
 else:
-    # חישוב התראות
     req_count = get_pending_requests_count()
     usr_count = get_pending_users_count()
     
@@ -123,7 +115,7 @@ else:
     st.sidebar.caption(f"תפקיד: {st.session_state['user_role']}")
     if st.sidebar.button("התנתק"): logout()
 
-    # --- בניית התפריט לפי הרשאות (חדש!) ---
+    # תפריט לפי הרשאות
     if st.session_state['user_role'] == "מנהל מלאי":
         menu = {
             "search": "חיפוש ופעולות",
@@ -133,9 +125,9 @@ else:
             "items": "ניהול פריטים (קטלוג)",
             "warehouses": "ניהול מחסנים",
             "users": f"ניהול משתמשים {usr_alert}",
-            "logs": "יומן פעילות (Logs)"
+            "logs": "יומן פעילות"
         }
-    else: # יוזר מושך
+    else:
         menu = {
             "search": "חיפוש ופעולות",
             "pull": "משיכת מלאי (יציאה)"
@@ -208,12 +200,10 @@ else:
                 c1.markdown(f"**{d['item_name']}**")
                 c1.caption(f"📍 {d['warehouse']} | שורה: {d.get('row')} | כמות: {d['quantity']}")
                 
-                # כפתור משיכה לכולם
                 if c2.button("📤 משוך", key=f"p_{doc.id}"):
                     st.session_state['active_action'] = {'type': 'pull', 'id': doc.id, 'name': d['item_name']}
                     st.rerun()
                 
-                # כפתור הזזה - רק למנהל!
                 if st.session_state['user_role'] == "מנהל מלאי":
                     if c2.button("🚚 הזז", key=f"m_{doc.id}"):
                         st.session_state['active_action'] = {'type': 'move', 'id': doc.id, 'name': d['item_name']}
@@ -223,7 +213,7 @@ else:
             st.warning("לא נמצאו תוצאות.")
 
     # ==========================================
-    # 2. אישור משיכות (מנהל בלבד)
+    # 2. אישור משיכות
     # ==========================================
     elif choice_key == "approve":
         reqs = db.collection("Requests").where("status", "==", "pending").stream()
@@ -255,7 +245,7 @@ else:
         if not found: st.info("אין בקשות ממתינות.")
 
     # ==========================================
-    # 3. קליטת מלאי (מנהל בלבד)
+    # 3. קליטת מלאי
     # ==========================================
     elif choice_key == "stock_in":
         items_map = {i.to_dict()['description']: i.id for i in db.collection("Items").stream()}
@@ -296,7 +286,7 @@ else:
                     st.success("נקלט בהצלחה!")
 
     # ==========================================
-    # 4. משיכת מלאי (כולם)
+    # 4. משיכת מלאי
     # ==========================================
     elif choice_key == "pull":
         inv = db.collection("Inventory").where("quantity", ">", 0).stream()
@@ -320,7 +310,7 @@ else:
                     st.success("נשלח!")
 
     # ==========================================
-    # 5. ניהול מחסנים (מנהל בלבד)
+    # 5. ניהול מחסנים
     # ==========================================
     elif choice_key == "warehouses":
         with st.form("new_wh"):
@@ -351,7 +341,7 @@ else:
                     st.rerun()
 
     # ==========================================
-    # 6. ניהול פריטים (מנהל בלבד)
+    # 6. ניהול פריטים
     # ==========================================
     elif choice_key == "items":
         with st.expander("➕ הוסף פריט חדש"):
@@ -429,7 +419,7 @@ else:
                     st.rerun()
 
     # ==========================================
-    # 7. ניהול משתמשים (משודרג!)
+    # 7. ניהול משתמשים
     # ==========================================
     elif choice_key == "users":
         st.subheader("👥 משתמשים במערכת")
@@ -456,14 +446,12 @@ else:
                         st.rerun()
             st.divider()
 
-        # רשימת המשתמשים המאושרים
         st.write("✅ משתמשים פעילים")
         for u in approved:
             data = u.to_dict()
             with st.expander(f"{data['email']} - {data.get('role')}"):
                 c1, c2 = st.columns(2)
                 
-                # שינוי תפקיד
                 new_role = c1.selectbox("שנה תפקיד", ["יוזר מושך", "מנהל מלאי"], index=0 if data.get('role') == "יוזר מושך" else 1, key=f"rol_{u.id}")
                 if c1.button("עדכן תפקיד", key=f"upd_{u.id}"):
                     db.collection("Users").document(u.id).update({"role": new_role})
@@ -471,7 +459,6 @@ else:
                     st.success("עודכן")
                     st.rerun()
                 
-                # מחיקת משתמש
                 if c2.button("מחק משתמש", key=f"delu_{u.id}"):
                     db.collection("Users").document(u.id).delete()
                     log_action("מחיקת משתמש", u.id)
@@ -479,12 +466,11 @@ else:
                     st.rerun()
 
     # ==========================================
-    # 8. יומן פעילות (חדש!)
+    # 8. יומן פעילות
     # ==========================================
     elif choice_key == "logs":
         st.subheader("📜 יומן פעילות")
         try:
-            # שליפת 50 הפעולות האחרונות
             logs = db.collection("Logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).stream()
             
             data = []
