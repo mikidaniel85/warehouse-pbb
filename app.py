@@ -159,10 +159,7 @@ else:
     if choice_key == "search":
         search_q = st.text_input("🔍 חפש פריט (שם או מק\"ט)")
         
-        # טעינת קטלוג פריטים לצורך זיהוי מק"טים והשלמת מידע
         all_items_catalog = {doc.id: doc.to_dict() for doc in db.collection("Items").stream()}
-        
-        # טעינת מלאי
         inv_stream = list(db.collection("Inventory").stream())
         
         found_inventory = []
@@ -172,28 +169,24 @@ else:
             # שלב 1: חיפוש במלאי הקיים
             for doc in inv_stream:
                 d = doc.to_dict()
-                # מנסים למצוא את המק"ט מתוך הקטלוג לפי item_id
                 item_id = d.get('item_id')
                 catalog_data = all_items_catalog.get(item_id, {})
                 sku = catalog_data.get('internal_sku', '')
                 
-                # בדיקת התאמה: שם הפריט או מק"ט
+                # בדיקת התאמה
                 if (search_q.lower() in d['item_name'].lower()) or (search_q in str(sku)):
-                    # שומרים את המק"ט בתוך האובייקט כדי להציג אותו
                     d['display_sku'] = sku
                     found_inventory.append(doc)
                     found_item_ids_in_inv.add(item_id)
 
-            # שלב 2: חיפוש בקטלוג (עבור פריטים שאין להם מלאי אבל קיימים במערכת)
+            # שלב 2: חיפוש בקטלוג
             found_catalog_only = []
             for item_id, data in all_items_catalog.items():
-                if item_id not in found_item_ids_in_inv: # אם כבר מצאנו במלאי, לא נציג שוב
+                if item_id not in found_item_ids_in_inv: 
                     if (search_q.lower() in data['description'].lower()) or (search_q in str(data['internal_sku'])):
                         found_catalog_only.append((item_id, data))
 
             # --- תצוגת תוצאות ---
-            
-            # א. תוצאות מהמלאי
             if found_inventory:
                 st.success(f"נמצאו {len(found_inventory)} פריטים במלאי")
                 for doc in found_inventory:
@@ -202,7 +195,6 @@ else:
                     with st.container(border=True):
                         c1, c2 = st.columns([3, 1])
                         c1.markdown(f"**{d['item_name']}**")
-                        # תצוגת מק"ט בקטן
                         if sku_display:
                             c1.caption(f"🆔 {sku_display} | 📍 {d['warehouse']} | שורה: {d.get('row')} | כמות: **{d['quantity']}**")
                         else:
@@ -216,9 +208,8 @@ else:
                                 st.session_state['active_action'] = {'type': 'move', 'id': doc.id, 'name': d['item_name']}
                                 st.rerun()
             
-            # ב. תוצאות מהקטלוג (ללא מלאי)
             if found_catalog_only:
-                st.info(f"נמצאו {len(found_catalog_only)} פריטים נוספים בקטלוג (ללא מלאי כרגע)")
+                st.info(f"נמצאו {len(found_catalog_only)} פריטים נוספים בקטלוג (ללא מלאי)")
                 for item_id, data in found_catalog_only:
                     with st.container(border=True):
                         st.markdown(f"**{data['description']}**")
@@ -238,13 +229,13 @@ else:
             
             if action['type'] == 'pull':
                 with st.form("act_pull"):
-                    qty = st.number_input("כמות למשיכה", min_value=1, value=1)
+                    qty = st.number_input("כמות למשיכה", min_value=1, step=1, value=1)
                     reason = st.text_input("סיבה / שרוול")
                     if st.form_submit_button("שלח בקשה"):
                         db.collection("Requests").add({
                             "user_email": st.session_state['user_email'],
                             "item_name": action['name'], "location_id": action['id'],
-                            "quantity": qty, "reason": reason, "status": "pending", "timestamp": datetime.now()
+                            "quantity": int(qty), "reason": reason, "status": "pending", "timestamp": datetime.now()
                         })
                         log_action("בקשת משיכה", f"{qty} יח' של {action['name']}")
                         st.success("הבקשה נשלחה!")
@@ -252,18 +243,19 @@ else:
                         st.rerun()
 
             elif action['type'] == 'move':
-                # תיקון לנייד: הסרת העמודות
                 with st.form("act_move"):
                     whs_list = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
                     new_wh = st.selectbox("לאן להעביר?", whs_list)
-                    st.caption("מיקום חדש:")
-                    # הוסרו העמודות כדי שיהיה נוח בנייד
-                    nr = st.text_input("שורה חדשה")
-                    nc = st.text_input("עמודה חדשה")
-                    nf = st.text_input("קומה חדשה")
+                    st.caption("מיקום חדש (הזן מספרים למקלדת נוחה):")
+                    
+                    # תיקון למקלדת בנייד
+                    nr = st.number_input("שורה (מספר)", min_value=1, step=1, value=1)
+                    nc = st.text_input("עמודה (טקסט)")
+                    nf = st.number_input("קומה (מספר)", min_value=1, step=1, value=1)
+                    
                     if st.form_submit_button("בצע העברה"):
                         db.collection("Inventory").document(action['id']).update({
-                            "warehouse": new_wh, "row": nr, "column": nc, "floor": nf
+                            "warehouse": new_wh, "row": str(nr), "column": nc, "floor": str(nf)
                         })
                         log_action("העברת פריט", f"{action['name']} -> {new_wh}")
                         st.success("הפריט הועבר!")
@@ -309,26 +301,29 @@ else:
         if items and whs:
             si = st.selectbox("בחר פריט (ניתן להקליד לחיפוש)", list(items.keys()))
             
-            # תיקון לנייד: הסרת העמודות
             with st.form("sin"):
                 wh = st.selectbox("מחסן", whs)
-                st.caption("מיקום:")
-                # שדות אחד מתחת לשני לטובת המובייל
-                r = st.text_input("שורה")
-                c = st.text_input("עמודה")
-                f = st.text_input("קומה")
-                q = st.number_input("כמות", 1)
+                st.caption("מיקום (הזן מספרים למקלדת נוחה):")
+                
+                # תיקון למקלדת בנייד
+                r = st.number_input("שורה (מספר)", min_value=1, step=1, value=1)
+                c = st.text_input("עמודה (טקסט)")
+                f = st.number_input("קומה (מספר)", min_value=1, step=1, value=1)
+                
+                q = st.number_input("כמות", min_value=1, step=1, value=1)
                 
                 if st.form_submit_button("קלוט מלאי"):
-                    loc = f"{wh}_{r}_{c}_{f}_{items[si]}"
+                    # המרת המספרים לטקסט למסד הנתונים
+                    str_r, str_f = str(r), str(f)
+                    loc = f"{wh}_{str_r}_{c}_{str_f}_{items[si]}"
                     ref = db.collection("Inventory").document(loc)
                     if ref.get().exists: 
                         ref.update({"quantity": ref.get().to_dict()['quantity'] + q})
                     else: 
                         ref.set({
                             "item_name": si, "warehouse": wh, 
-                            "row": r, "column": c, "floor": f, 
-                            "quantity": q, "item_id": items[si]
+                            "row": str_r, "column": c, "floor": str_f, 
+                            "quantity": int(q), "item_id": items[si]
                         })
                     log_action("קליטה", f"{q} {si}")
                     st.success("נקלט בהצלחה!")
@@ -342,7 +337,7 @@ else:
         if opts:
             k = st.selectbox("פריט", list(opts.keys()))
             with st.form("pf"):
-                q = st.number_input("כמות", 1)
+                q = st.number_input("כמות", min_value=1, step=1, value=1)
                 rs = st.text_input("סיבה")
                 if st.form_submit_button("שלח"):
                     db.collection("Requests").add({"user_email": st.session_state['user_email'], "item_name": k.split('(')[0], "location_id": opts[k], "quantity": q, "reason": rs, "status": "pending", "timestamp": datetime.now()})
@@ -366,128 +361,76 @@ else:
             if c2.button("🗑️", key=w.id): db.collection("Warehouses").document(w.id).delete(); st.rerun()
 
     # ==========================================
-    # 6. ניהול פריטים (כולל ייבוא וחיפוש)
+    # 6. ניהול פריטים
     # ==========================================
     elif choice_key == "items":
-        
-        # --- אזור ייבוא מאקסל ---
         with st.expander("📂 ייבוא פריטים מאקסל/CSV"):
-            st.info("""
-            **הוראות:**
-            כותרות חובה: `description`, `internal_sku`
-            כותרת רשות: `manufacturer_sku`
-            """)
-            
+            st.info("כותרות חובה: description, internal_sku")
             uploaded_file = st.file_uploader("גרור לכאן קובץ", type=['csv', 'xlsx'])
-            
             if uploaded_file and st.button("התחל טעינה"):
                 try:
-                    if uploaded_file.name.endswith('.csv'):
-                        df = pd.read_csv(uploaded_file)
-                    else:
-                        df = pd.read_excel(uploaded_file)
+                    df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+                    existing_skus = {doc.to_dict().get('internal_sku') for doc in db.collection("Items").stream()}
+                    added, skipped = 0, 0
                     
-                    req_cols = ['description', 'internal_sku']
-                    if not all(col in df.columns for col in req_cols):
-                        st.error("❌ הקובץ לא תקין. חסרות עמודות חובה.")
-                    else:
-                        existing_skus = {doc.to_dict().get('internal_sku') for doc in db.collection("Items").stream()}
-                        added = 0
-                        skipped = 0
-                        progress_bar = st.progress(0)
-                        total_rows = len(df)
+                    progress_bar = st.progress(0)
+                    total_rows = len(df)
+                    
+                    for index, row in df.iterrows():
+                        progress_bar.progress((index + 1) / total_rows)
+                        desc = str(row['description']).strip()
+                        int_sku = str(row['internal_sku']).strip()
+                        man_sku = str(row.get('manufacturer_sku', '')).strip()
+                        if man_sku == 'nan': man_sku = ""
                         
-                        for index, row in df.iterrows():
-                            progress_bar.progress((index + 1) / total_rows)
-                            desc = str(row['description']).strip()
-                            int_sku = str(row['internal_sku']).strip()
-                            man_sku = str(row.get('manufacturer_sku', '')).strip()
-                            if man_sku == 'nan': man_sku = ""
-                            
-                            if int_sku in existing_skus:
-                                skipped += 1
-                                continue
-                            
-                            db.collection("Items").add({
-                                "description": desc,
-                                "internal_sku": int_sku,
-                                "manufacturer_sku": man_sku
-                            })
-                            existing_skus.add(int_sku)
-                            added += 1
+                        if int_sku in existing_skus:
+                            skipped += 1
+                            continue
                         
-                        st.success(f"✅ הסתיים! נוספו: {added} | דולגו: {skipped}")
-                        log_action("ייבוא קובץ", f"נוספו {added}")
-                        if added > 0: st.balloons()
-                            
-                except Exception as e:
-                    st.error(f"שגיאה: {e}")
+                        db.collection("Items").add({"description": desc, "internal_sku": int_sku, "manufacturer_sku": man_sku})
+                        existing_skus.add(int_sku)
+                        added += 1
+                    
+                    st.success(f"✅ הסתיים! נוספו: {added} | דולגו: {skipped}")
+                    if added > 0: st.balloons()
+                except Exception as e: st.error(f"שגיאה: {e}")
 
         st.divider()
-
-        # --- הוספה ידנית ורשימה עם חיפוש ---
-        # חיפוש בניהול פריטים
-        manage_search = st.text_input("🔍 חפש ברשימת הפריטים", placeholder="הקלד שם או מק\"ט לעריכה")
+        manage_search = st.text_input("🔍 חפש ברשימה", placeholder="שם או מק\"ט")
         
-        with st.expander("➕ הוסף פריט ידנית"):
+        with st.expander("➕ הוסף ידנית"):
             d, r, y = st.text_input("תיאור"), st.text_input("מק\"ט רשות"), st.text_input("יצרן")
             if st.button("שמור חדש"):
-                exist = list(db.collection("Items").where("internal_sku", "==", r).stream())
-                if exist:
-                    st.error("מק\"ט זה כבר קיים!")
-                else:
-                    db.collection("Items").add({"description": d, "internal_sku": r, "manufacturer_sku": y})
-                    log_action("הוספת פריט", d)
-                    st.rerun()
+                if list(db.collection("Items").where("internal_sku", "==", r).stream()): st.error("מק\"ט קיים!")
+                else: db.collection("Items").add({"description": d, "internal_sku": r, "manufacturer_sku": y}); st.rerun()
         
         st.write("---")
 
-        # רשימת הפריטים (מסוננת לפי חיפוש)
         if st.session_state['edit_item_id']:
             doc = db.collection("Items").document(st.session_state['edit_item_id']).get()
             if doc.exists:
                 data = doc.to_dict()
-                st.info(f"עורך את: {data['description']}")
                 with st.form("edit_item"):
                     nd = st.text_input("תיאור", data['description'])
                     ni = st.text_input("מק\"ט רשות", data['internal_sku'])
                     nm = st.text_input("מק\"ט יצרן", data.get('manufacturer_sku', ''))
                     if st.form_submit_button("שמור"):
-                        db.collection("Items").document(st.session_state['edit_item_id']).update(
-                            {"description": nd, "internal_sku": ni, "manufacturer_sku": nm}
-                        )
+                        db.collection("Items").document(st.session_state['edit_item_id']).update({"description": nd, "internal_sku": ni, "manufacturer_sku": nm})
                         for i in db.collection("Inventory").where("item_id", "==", st.session_state['edit_item_id']).stream():
                              db.collection("Inventory").document(i.id).update({"item_name": nd})
-                        log_action("עריכת פריט", nd)
                         st.session_state['edit_item_id'] = None
                         st.rerun()
                 if st.button("ביטול"): st.session_state['edit_item_id'] = None; st.rerun()
         else:
             items_stream = list(db.collection("Items").stream())
-            # סינון הרשימה לפי החיפוש
-            filtered_items = []
-            for i in items_stream:
-                it = i.to_dict()
-                if manage_search:
-                    if (manage_search.lower() in it['description'].lower()) or (manage_search in str(it['internal_sku'])):
-                        filtered_items.append(i)
-                else:
-                    filtered_items.append(i)
-
-            if not filtered_items and manage_search:
-                st.warning("לא נמצאו פריטים.")
+            filtered = [i for i in items_stream if not manage_search or (manage_search.lower() in i.to_dict()['description'].lower() or manage_search in str(i.to_dict()['internal_sku']))]
             
-            for i in filtered_items:
+            for i in filtered:
                 it = i.to_dict()
                 cols = st.columns([4, 1, 1])
                 cols[0].write(f"🔹 {it['description']} ({it['internal_sku']})")
-                if cols[1].button("🗑️", key=f"del_{i.id}"):
-                    db.collection("Items").document(i.id).delete()
-                    log_action("מחיקת פריט", it['description'])
-                    st.rerun()
-                if cols[2].button("✏️", key=f"edit_{i.id}"):
-                    st.session_state['edit_item_id'] = i.id
-                    st.rerun()
+                if cols[1].button("🗑️", key=f"d_{i.id}"): db.collection("Items").document(i.id).delete(); st.rerun()
+                if cols[2].button("✏️", key=f"e_{i.id}"): st.session_state['edit_item_id'] = i.id; st.rerun()
 
     # ==========================================
     # 7. ניהול משתמשים
@@ -508,11 +451,10 @@ else:
                     st.write(f"{data['email']} מבקש איפוס")
                     if st.button("אפס ל-123456", key=f"rst_{u.id}"):
                         db.collection("Users").document(u.id).update({"password": "123456", "reset_requested": False})
-                        log_action("איפוס סיסמה", u.id)
                         st.rerun()
 
         if pending:
-            st.error(f"⏳ {len(pending)} ממתינים לאישור")
+            st.error(f"⏳ {len(pending)} ממתינים")
             for u in pending:
                 data = u.to_dict()
                 with st.container(border=True):
@@ -520,7 +462,6 @@ else:
                     c1.write(f"**{data['email']}** ({data.get('role')})")
                     if c2.button("אשר", key=f"ap_{u.id}"):
                         db.collection("Users").document(u.id).update({"approved": True})
-                        log_action("אישור משתמש", u.id)
                         st.rerun()
                     if c3.button("מחק", key=f"dl_{u.id}"):
                         db.collection("Users").document(u.id).delete()
@@ -538,20 +479,39 @@ else:
                 
                 if c1.button("עדכן תפקיד", key=f"upd_{u.id}"):
                     db.collection("Users").document(u.id).update({"role": new_role})
-                    log_action("שינוי תפקיד", f"{u.id} -> {new_role}")
                     st.success("עודכן")
                     st.rerun()
                 
                 if c2.button("מחק משתמש", key=f"delu_{u.id}"):
                     db.collection("Users").document(u.id).delete()
-                    log_action("מחיקת משתמש", u.id)
-                    st.warning("נמחק!")
                     st.rerun()
 
     # ==========================================
-    # 8. לוגים
+    # 8. יומן פעילות (משוחזר ומלא!)
     # ==========================================
     elif choice_key == "logs":
         st.subheader("📜 יומן פעילות")
-        logs = db.collection("Logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).stream()
-        st.dataframe([l.to_dict() for l in logs])
+        try:
+            logs = db.collection("Logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).stream()
+            
+            data = []
+            for log in logs:
+                l = log.to_dict()
+                # הגנה למקרה שאין Timestamp תקין
+                ts = l.get('timestamp')
+                time_str = ts.strftime("%d/%m %H:%M") if ts else "?"
+                
+                data.append({
+                    "זמן": time_str,
+                    "משתמש": l.get('user', '?'),
+                    "פעולה": l.get('action', '?'),
+                    "פרטים": l.get('details', '?')
+                })
+            
+            if data:
+                # שימוש ב-Table למראה נקי וברור יותר
+                st.table(data)
+            else:
+                st.info("היומן ריק")
+        except Exception as e:
+            st.error(f"לא ניתן לטעון לוגים: {e}")
