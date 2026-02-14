@@ -3,33 +3,27 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
 import json
+import pandas as pd # ספרייה לטיפול באקסל
 
-# הגדרות תצוגה
+# --- הגדרות תצוגה ---
 st.set_page_config(page_title="ניהול מלאי שרוולים", layout="centered")
 
-# --- 1. התחברות ל-Firebase (גרסה משוריינת) ---
+# --- 1. התחברות ל-Firebase ---
 if not firebase_admin._apps:
     try:
-        # אופציה א: אנחנו בענן של Streamlit (קוראים מהסודות)
         if "firebase" in st.secrets:
             key_dict = dict(st.secrets["firebase"])
-            # תיקון לבעיית ירידת שורה במפתח הפרטי
             if "private_key" in key_dict:
                 key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             cred = credentials.Certificate(key_dict)
             firebase_admin.initialize_app(cred)
-            
-        # אופציה ב: אנחנו במחשב מקומי (קוראים מהקובץ JSON)
         else:
             cred = credentials.Certificate("serviceAccountKey.json")
             firebase_admin.initialize_app(cred)
-
     except Exception as e:
         st.error(f"❌ שגיאה בהתחברות ל-Firebase: {e}")
-        st.info("💡 טיפ: אם אתה במחשב מקומי, וודא שקובץ serviceAccountKey.json נמצא בתיקייה.")
         st.stop()
 
-# יצירת הלקוח למסד הנתונים
 db = firestore.client()
 
 # --- זיכרון משתמש ---
@@ -44,7 +38,7 @@ if 'edit_item_id' not in st.session_state:
 if 'active_action' not in st.session_state:
     st.session_state['active_action'] = None
 
-# --- פונקציית לוגים ---
+# --- פונקציות עזר ---
 def log_action(action, details):
     db.collection("Logs").add({
         "timestamp": datetime.now(),
@@ -54,7 +48,6 @@ def log_action(action, details):
         "details": details
     })
 
-# --- פונקציות עזר ---
 def logout():
     st.session_state['logged_in'] = False
     st.session_state['user_email'] = ""
@@ -64,10 +57,8 @@ def logout():
     st.rerun()
 
 def get_counts():
-    """מחזיר מספר בקשות ומשתמשים ממתינים/מבקשי איפוס"""
     try:
         reqs = len(list(db.collection("Requests").where("status", "==", "pending").stream()))
-        # משתמשים שלא אושרו או שביקשו איפוס סיסמה
         users_pending = 0
         all_users = db.collection("Users").stream()
         for u in all_users:
@@ -78,11 +69,10 @@ def get_counts():
     except:
         return 0, 0
 
-# --- מסך כניסה והרשמה ---
+# --- מסך כניסה ---
 if not st.session_state['logged_in']:
     st.title("📦 מערכת מלאי גשרי עליה")
-    # הוספנו טאב שלישי: שכחתי סיסמה
-    tab1, tab2, tab3 = st.tabs(["כניסה", "הרשמה", "שכחתי סיסמה 🔒"])
+    tab1, tab2, tab3 = st.tabs(["כניסה", "הרשמה", "שכחתי סיסמה"])
     
     with tab1:
         email = st.text_input("אימייל", key="login_email")
@@ -110,20 +100,17 @@ if not st.session_state['logged_in']:
         role = st.radio("תפקיד", ["יוזר מושך", "מנהל מלאי"])
         if st.button("הירשם"):
             db.collection("Users").document(reg_email).set({"email": reg_email, "password": reg_pw, "role": role, "approved": False})
-            st.warning("נשלח לאישור מנהל.")
-            
-    # --- טאב שכחתי סיסמה (חדש!) ---
+            st.warning("נשלח לאישור.")
+
     with tab3:
-        st.write("הזן את המייל שלך כדי לשלוח בקשת איפוס למנהל.")
         reset_email = st.text_input("אימייל לשחזור")
         if st.button("שלח בקשת איפוס"):
             doc_ref = db.collection("Users").document(reset_email)
             if doc_ref.get().exists:
-                # סימון דגל 'reset_requested' למשתמש
                 doc_ref.update({"reset_requested": True})
-                st.success("הבקשה נשלחה! פנה לאבי או אהרון לקבלת סיסמה זמנית.")
+                st.success("הבקשה נשלחה למנהל.")
             else:
-                st.error("המייל לא קיים במערכת.")
+                st.error("המייל לא קיים.")
 
 # --- אפליקציה ראשית ---
 else:
@@ -131,21 +118,18 @@ else:
     req_alert = f"🔴 ({req_c})" if req_c > 0 else ""
     usr_alert = f"🔴 ({usr_c})" if usr_c > 0 else ""
     
-    # סרגל צד - אזור אישי
     st.sidebar.write(f"מחובר: **{st.session_state['user_email']}**")
     st.sidebar.caption(f"תפקיד: {st.session_state['user_role']}")
     
-    # --- שינוי סיסמה אישי (חדש!) ---
     with st.sidebar.expander("🔐 שינוי סיסמה"):
         new_pass_1 = st.text_input("סיסמה חדשה", type="password", key="np1")
         if st.button("עדכן סיסמה"):
             if len(new_pass_1) > 3:
                 db.collection("Users").document(st.session_state['user_email']).update({
-                    "password": new_pass_1,
-                    "reset_requested": False # איפוס הדגל אם היה
+                    "password": new_pass_1, "reset_requested": False
                 })
                 st.success("הסיסמה שונתה!")
-                log_action("שינוי סיסמה", "המשתמש שינה את סיסמתו")
+                log_action("שינוי סיסמה", "בוצע שינוי עצמי")
             else:
                 st.error("סיסמה קצרה מדי")
 
@@ -164,10 +148,7 @@ else:
             "logs": "יומן פעילות"
         }
     else:
-        menu = {
-            "search": "חיפוש ופעולות",
-            "pull": "משיכת מלאי (יציאה)"
-        }
+        menu = {"search": "חיפוש ופעולות", "pull": "משיכת מלאי"}
     
     choice_key = st.sidebar.radio("תפריט", list(menu.keys()), format_func=lambda x: menu[x])
     st.title(f"📦 {menu[choice_key]}")
@@ -176,6 +157,35 @@ else:
     # 1. חיפוש ופעולות
     # ==========================================
     if choice_key == "search":
+        search_q = st.text_input("🔍 חפש פריט (שם או מק\"ט)")
+        
+        inv_stream = list(db.collection("Inventory").stream())
+        found_items = []
+        
+        if search_q:
+            for doc in inv_stream:
+                d = doc.to_dict()
+                if (search_q.lower() in d['item_name'].lower()) or (search_q in str(d.get('item_id', ''))):
+                    found_items.append(doc)
+        
+        if found_items:
+            st.success(f"נמצאו {len(found_items)} פריטים!")
+            for doc in found_items:
+                d = doc.to_dict()
+                with st.container(border=True):
+                    c1, c2 = st.columns([3, 1])
+                    c1.markdown(f"**{d['item_name']}**")
+                    c1.caption(f"📍 {d['warehouse']} | שורה: {d.get('row')} | כמות: **{d['quantity']}**")
+                    if c2.button("📤 משוך", key=f"p_{doc.id}"):
+                        st.session_state['active_action'] = {'type': 'pull', 'id': doc.id, 'name': d['item_name']}
+                        st.rerun()
+                    if st.session_state['user_role'] == "מנהל מלאי":
+                        if c2.button("🚚 הזז", key=f"m_{doc.id}"):
+                            st.session_state['active_action'] = {'type': 'move', 'id': doc.id, 'name': d['item_name']}
+                            st.rerun()
+        elif search_q:
+            st.warning("לא נמצאו תוצאות.")
+
         if st.session_state['active_action']:
             action = st.session_state['active_action']
             st.divider()
@@ -183,15 +193,13 @@ else:
             
             if action['type'] == 'pull':
                 with st.form("act_pull"):
-                    st.write("📤 **משיכה מהירה**")
                     qty = st.number_input("כמות למשיכה", min_value=1, value=1)
                     reason = st.text_input("סיבה / שרוול")
                     if st.form_submit_button("שלח בקשה"):
                         db.collection("Requests").add({
                             "user_email": st.session_state['user_email'],
                             "item_name": action['name'], "location_id": action['id'],
-                            "quantity": qty, "reason": reason,
-                            "status": "pending", "timestamp": datetime.now()
+                            "quantity": qty, "reason": reason, "status": "pending", "timestamp": datetime.now()
                         })
                         log_action("בקשת משיכה", f"{qty} יח' של {action['name']}")
                         st.success("הבקשה נשלחה!")
@@ -200,18 +208,15 @@ else:
 
             elif action['type'] == 'move':
                 with st.form("act_move"):
-                    st.write("🚚 **העברת מיקום**")
                     whs_list = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
                     new_wh = st.selectbox("לאן להעביר?", whs_list)
                     c1, c2, c3 = st.columns(3)
-                    nr = c1.text_input("שורה חדשה")
-                    nc = c2.text_input("עמודה חדשה")
-                    nf = c3.text_input("קומה חדשה")
+                    nr, nc, nf = c1.text_input("שורה"), c2.text_input("עמ'"), c3.text_input("קומה")
                     if st.form_submit_button("בצע העברה"):
                         db.collection("Inventory").document(action['id']).update({
                             "warehouse": new_wh, "row": nr, "column": nc, "floor": nf
                         })
-                        log_action("העברת פריט", f"{action['name']} הועבר ל-{new_wh}")
+                        log_action("העברת פריט", f"{action['name']} -> {new_wh}")
                         st.success("הפריט הועבר!")
                         st.session_state['active_action'] = None
                         st.rerun()
@@ -219,131 +224,68 @@ else:
             if st.button("ביטול פעולה"):
                 st.session_state['active_action'] = None
                 st.rerun()
-            st.divider()
-
-        search_q = st.text_input("🔍 חפש פריט (התחל להקליד שם או מק\"ט)")
-        inv_stream = db.collection("Inventory").stream()
-        found_any = False
-        
-        for doc in inv_stream:
-            d = doc.to_dict()
-            if search_q and (search_q.lower() not in d['item_name'].lower() and search_q not in str(d.get('item_id', ''))):
-                continue
-            
-            found_any = True
-            with st.container(border=True):
-                c1, c2 = st.columns([3, 1])
-                c1.markdown(f"**{d['item_name']}**")
-                c1.caption(f"📍 {d['warehouse']} | שורה: {d.get('row')} | כמות: {d['quantity']}")
-                
-                if c2.button("📤 משוך", key=f"p_{doc.id}"):
-                    st.session_state['active_action'] = {'type': 'pull', 'id': doc.id, 'name': d['item_name']}
-                    st.rerun()
-                
-                if st.session_state['user_role'] == "מנהל מלאי":
-                    if c2.button("🚚 הזז", key=f"m_{doc.id}"):
-                        st.session_state['active_action'] = {'type': 'move', 'id': doc.id, 'name': d['item_name']}
-                        st.rerun()
-
-        if not found_any and search_q:
-            st.warning("לא נמצאו תוצאות.")
 
     # ==========================================
     # 2. אישור משיכות
     # ==========================================
     elif choice_key == "approve":
-        reqs = db.collection("Requests").where("status", "==", "pending").stream()
-        found = False
-        for req in reqs:
-            found = True
-            r = req.to_dict()
-            with st.container(border=True):
-                st.markdown(f"**{r['user_email']}** מבקש **{r['quantity']}** מתוך **{r['item_name']}**")
-                st.caption(f"סיבה: {r['reason']}")
-                col_ok, col_rej = st.columns(2)
-                if col_ok.button("✅ אשר", key=f"ok_{req.id}", use_container_width=True):
-                    inv_ref = db.collection("Inventory").document(r['location_id'])
-                    snap = inv_ref.get()
-                    if snap.exists:
-                        curr = snap.to_dict()['quantity']
-                        inv_ref.update({"quantity": max(0, curr - r['quantity'])})
-                        db.collection("Requests").document(req.id).update({"status": "approved"})
-                        log_action("אישור משיכה", f"אושר ל-{r['user_email']} למשוך {r['item_name']}")
-                        st.success("אושר!")
-                        st.rerun()
-                    else:
-                        st.error("פריט לא נמצא")
-                if col_rej.button("❌ דחה", key=f"rj_{req.id}", use_container_width=True):
-                    db.collection("Requests").document(req.id).update({"status": "rejected"})
-                    log_action("דחיית משיכה", f"נדחה ל-{r['user_email']} עבור {r['item_name']}")
-                    st.warning("הבקשה נדחתה.")
-                    st.rerun()
-        if not found: st.info("אין בקשות ממתינות.")
+         reqs = db.collection("Requests").where("status", "==", "pending").stream()
+         found = False
+         for req in reqs:
+             found = True
+             r = req.to_dict()
+             with st.container(border=True):
+                 st.write(f"**{r['user_email']}**: {r['quantity']} X {r['item_name']}")
+                 c1, c2 = st.columns(2)
+                 if c1.button("✅", key=f"ok_{req.id}"):
+                     inv_ref = db.collection("Inventory").document(r['location_id'])
+                     s = inv_ref.get()
+                     if s.exists:
+                         inv_ref.update({"quantity": max(0, s.to_dict()['quantity'] - r['quantity'])})
+                         db.collection("Requests").document(req.id).update({"status": "approved"})
+                         st.rerun()
+                 if c2.button("❌", key=f"rj_{req.id}"):
+                     db.collection("Requests").document(req.id).update({"status": "rejected"})
+                     st.rerun()
+         if not found: st.info("אין בקשות.")
 
     # ==========================================
     # 3. קליטת מלאי
     # ==========================================
     elif choice_key == "stock_in":
-        items_map = {i.to_dict()['description']: i.id for i in db.collection("Items").stream()}
-        whs_list = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
-        
-        if items_map and whs_list:
-            sel_item = st.selectbox("בחר פריט (הקלד לחיפוש)", list(items_map.keys()))
-            exist = list(db.collection("Inventory").where("item_name", "==", sel_item).limit(1).stream())
-            def_w_idx, def_r, def_c, def_f = 0, "", "", ""
-            if exist:
-                d = exist[0].to_dict()
-                if d['warehouse'] in whs_list:
-                    def_w_idx = whs_list.index(d['warehouse'])
-                def_r, def_c, def_f = d.get('row', ''), d.get('column', ''), d.get('floor', '')
-                st.info(f"💡 זוהה מיקום קיים: {d['warehouse']} (שורה {def_r})")
-
-            with st.form("in_form"):
-                sel_wh = st.selectbox("מחסן", whs_list, index=def_w_idx)
+        items = {i.to_dict()['description']: i.id for i in db.collection("Items").stream()}
+        whs = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
+        if items and whs:
+            si = st.selectbox("פריט", list(items.keys()))
+            with st.form("sin"):
+                wh = st.selectbox("מחסן", whs)
                 c1, c2, c3 = st.columns(3)
-                r = c1.text_input("שורה", value=def_r)
-                c = c2.text_input("עמודה", value=def_c)
-                f = c3.text_input("קומה", value=def_f)
-                qty = st.number_input("כמות", min_value=1)
-                
-                if st.form_submit_button("קלוט מלאי"):
-                    item_id = items_map[sel_item]
-                    loc_id = f"{sel_wh}_{r}_{c}_{f}_{item_id}"
-                    ref = db.collection("Inventory").document(loc_id)
-                    snap = ref.get()
-                    if snap.exists:
-                        ref.update({"quantity": snap.to_dict()['quantity'] + qty})
-                    else:
-                        ref.set({
-                            "item_name": sel_item, "warehouse": sel_wh, "row": r, "column": c, "floor": f,
-                            "quantity": qty, "item_id": item_id
-                        })
-                    log_action("קליטת מלאי", f"נקלטו {qty} יח' של {sel_item}")
-                    st.success("נקלט בהצלחה!")
+                r, c, f = c1.text_input("שורה"), c2.text_input("עמ'"), c3.text_input("קומה")
+                q = st.number_input("כמות", 1)
+                if st.form_submit_button("קלוט"):
+                    loc = f"{wh}_{r}_{c}_{f}_{items[si]}"
+                    ref = db.collection("Inventory").document(loc)
+                    if ref.get().exists: ref.update({"quantity": ref.get().to_dict()['quantity'] + q})
+                    else: ref.set({"item_name": si, "warehouse": wh, "row": r, "column": c, "floor": f, "quantity": q, "item_id": items[si]})
+                    log_action("קליטה", f"{q} {si}")
+                    st.success("נקלט!")
 
     # ==========================================
-    # 4. משיכת מלאי
+    # 4. משיכת מלאי (ידנית)
     # ==========================================
     elif choice_key == "pull":
         inv = db.collection("Inventory").where("quantity", ">", 0).stream()
-        opts = {f"{d.to_dict()['item_name']} | {d.to_dict()['warehouse']} (כמות: {d.to_dict()['quantity']})": d.id for d in inv}
-        if not opts:
-            st.warning("המחסן ריק.")
-        else:
-            sel_key = st.selectbox("חפש פריט למשיכה", list(opts.keys()))
-            with st.form("pull_f"):
-                q = st.number_input("כמות", min_value=1)
-                reason = st.text_input("סיבה")
-                if st.form_submit_button("שלח לאישור"):
-                    clean_name = sel_key.split("|")[0].strip()
-                    db.collection("Requests").add({
-                        "user_email": st.session_state['user_email'],
-                        "item_name": clean_name, "location_id": opts[sel_key],
-                        "quantity": q, "reason": reason,
-                        "status": "pending", "timestamp": datetime.now()
-                    })
-                    log_action("בקשת משיכה", f"בקשה ל-{q} יח' של {clean_name}")
+        opts = {f"{d.to_dict()['item_name']} ({d.to_dict()['warehouse']})": d.id for d in inv}
+        if opts:
+            k = st.selectbox("פריט", list(opts.keys()))
+            with st.form("pf"):
+                q = st.number_input("כמות", 1)
+                rs = st.text_input("סיבה")
+                if st.form_submit_button("שלח"):
+                    db.collection("Requests").add({"user_email": st.session_state['user_email'], "item_name": k.split('(')[0], "location_id": opts[k], "quantity": q, "reason": rs, "status": "pending", "timestamp": datetime.now()})
                     st.success("נשלח!")
+        else:
+            st.warning("המחסן ריק.")
 
     # ==========================================
     # 5. ניהול מחסנים
@@ -355,194 +297,148 @@ else:
                 db.collection("Warehouses").add({"name": n})
                 log_action("הוספת מחסן", n)
                 st.rerun()
-        
-        st.divider()
         for w in db.collection("Warehouses").stream():
-            c1, c2 = st.columns([4, 1])
+            c1, c2 = st.columns([4,1])
             c1.info(w.to_dict()['name'])
-            if c2.button("מחק", key=w.id):
-                st.session_state[f"del_wh_{w.id}"] = True
-            
-            if st.session_state.get(f"del_wh_{w.id}"):
-                st.error(f"למחוק את {w.to_dict()['name']}?")
-                cy, cn = st.columns(2)
-                if cy.button("כן", key=f"y_{w.id}"):
-                    for i in db.collection("Inventory").where("warehouse", "==", w.to_dict()['name']).stream():
-                        db.collection("Inventory").document(i.id).update({"warehouse": "מחסן זמני"})
-                    db.collection("Warehouses").document(w.id).delete()
-                    log_action("מחיקת מחסן", w.to_dict()['name'])
-                    st.rerun()
-                if cn.button("לא", key=f"n_{w.id}"):
-                    del st.session_state[f"del_wh_{w.id}"]
-                    st.rerun()
+            if c2.button("🗑️", key=w.id): db.collection("Warehouses").document(w.id).delete(); st.rerun()
 
     # ==========================================
-    # 6. ניהול פריטים
+    # 6. ניהול פריטים (עם ייבוא חכם)
     # ==========================================
     elif choice_key == "items":
-        with st.expander("➕ הוסף פריט חדש"):
-            d = st.text_input("תיאור"); r = st.text_input("מק\"ט רשותי"); y = st.text_input("מק\"ט יצרן")
+        
+        # --- אזור ייבוא מאקסל (משודרג) ---
+        with st.expander("📂 ייבוא פריטים מאקסל/CSV"):
+            st.info("""
+            **הוראות להכנת הקובץ:**
+            הקובץ חייב להכיל כותרות באנגלית בשורה הראשונה בדיוק כך:
+            `description` | `internal_sku` | `manufacturer_sku`
+            
+            * המערכת תבדוק כפילויות לפי **מק"ט רשותי (internal_sku)**.
+            * פריט שכבר קיים - המערכת **תדלג** עליו ולא תדרוס אותו.
+            """)
+            
+            uploaded_file = st.file_uploader("גרור לכאן קובץ", type=['csv', 'xlsx'])
+            
+            if uploaded_file and st.button("התחל טעינה"):
+                try:
+                    # טעינת הקובץ
+                    if uploaded_file.name.endswith('.csv'):
+                        df = pd.read_csv(uploaded_file)
+                    else:
+                        df = pd.read_excel(uploaded_file)
+                    
+                    # בדיקת עמודות
+                    req_cols = ['description', 'internal_sku']
+                    if not all(col in df.columns for col in req_cols):
+                        st.error("❌ הקובץ לא תקין. חסרות עמודות חובה: description, internal_sku")
+                    else:
+                        # שליפת כל המק"טים הקיימים כדי למנוע כפילויות (יעיל יותר משאילתה בודדת)
+                        existing_skus = {doc.to_dict().get('internal_sku') for doc in db.collection("Items").stream()}
+                        
+                        added_count = 0
+                        skipped_count = 0
+                        
+                        progress_bar = st.progress(0)
+                        total_rows = len(df)
+                        
+                        for index, row in df.iterrows():
+                            # עדכון מד התקדמות
+                            progress_bar.progress((index + 1) / total_rows)
+                            
+                            desc = str(row['description']).strip()
+                            int_sku = str(row['internal_sku']).strip()
+                            man_sku = str(row.get('manufacturer_sku', '')).strip()
+                            if man_sku == 'nan': man_sku = ""
+                            
+                            # דילוג אם המק"ט כבר קיים
+                            if int_sku in existing_skus:
+                                skipped_count += 1
+                                continue
+                            
+                            # הוספה למסד הנתונים
+                            db.collection("Items").add({
+                                "description": desc,
+                                "internal_sku": int_sku,
+                                "manufacturer_sku": man_sku
+                            })
+                            # הוספה לסט המקומי כדי למנוע כפילויות בתוך הקובץ עצמו
+                            existing_skus.add(int_sku)
+                            added_count += 1
+                        
+                        st.success(f"✅ הסתיים! נוספו: {added_count} | דולגו (כפולים): {skipped_count}")
+                        log_action("ייבוא קובץ", f"נוספו {added_count}, דולגו {skipped_count}")
+                        if added_count > 0:
+                            st.balloons()
+                            
+                except Exception as e:
+                    st.error(f"שגיאה בטעינת הקובץ: {e}")
+
+        # --- הוספה ידנית ---
+        with st.expander("➕ הוסף פריט בודד"):
+            d, r, y = st.text_input("תיאור"), st.text_input("מק\"ט רשות"), st.text_input("יצרן")
             if st.button("שמור חדש"):
-                db.collection("Items").add({"description": d, "internal_sku": r, "manufacturer_sku": y})
-                log_action("הוספת פריט", d)
-                st.rerun()
+                # בדיקת כפילות ידנית
+                exist = list(db.collection("Items").where("internal_sku", "==", r).stream())
+                if exist:
+                    st.error("מק\"ט זה כבר קיים במערכת!")
+                else:
+                    db.collection("Items").add({"description": d, "internal_sku": r, "manufacturer_sku": y})
+                    log_action("הוספת פריט", d)
+                    st.rerun()
         
         st.divider()
 
+        # --- רשימת הפריטים ---
         if st.session_state['edit_item_id']:
-            try:
-                doc_ref = db.collection("Items").document(st.session_state['edit_item_id'])
-                doc = doc_ref.get()
-                if doc.exists:
-                    data = doc.to_dict()
-                    old_name = data['description']
-                    
-                    st.info(f"✏️ עורך את: {data['description']}")
-                    with st.form("edit_item_form"):
-                        new_desc = st.text_input("תיאור", value=data['description'])
-                        new_internal = st.text_input("מק\"ט רשותי", value=data['internal_sku'])
-                        new_manuf = st.text_input("מק\"ט יצרן", value=data['manufacturer_sku'])
+            doc = db.collection("Items").document(st.session_state['edit_item_id']).get()
+            if doc.exists:
+                data = doc.to_dict()
+                st.info(f"עורך את: {data['description']}")
+                with st.form("edit_item"):
+                    nd = st.text_input("תיאור", data['description'])
+                    ni = st.text_input("מק\"ט רשות", data['internal_sku'])
+                    nm = st.text_input("מק\"ט יצרן", data.get('manufacturer_sku', ''))
+                    if st.form_submit_button("שמור"):
+                        db.collection("Items").document(st.session_state['edit_item_id']).update(
+                            {"description": nd, "internal_sku": ni, "manufacturer_sku": nm}
+                        )
+                        # עדכון שמות במלאי
+                        for i in db.collection("Inventory").where("item_id", "==", st.session_state['edit_item_id']).stream():
+                             db.collection("Inventory").document(i.id).update({"item_name": nd})
                         
-                        c_save, c_cancel = st.columns(2)
-                        if c_save.form_submit_button("שמור"):
-                            doc_ref.update({
-                                "description": new_desc,
-                                "internal_sku": new_internal,
-                                "manufacturer_sku": new_manuf
-                            })
-                            
-                            # עדכון מלאי
-                            count_updated = 0
-                            inv_by_id = db.collection("Inventory").where("item_id", "==", st.session_state['edit_item_id']).stream()
-                            for inv_doc in inv_by_id:
-                                db.collection("Inventory").document(inv_doc.id).update({"item_name": new_desc})
-                                count_updated += 1
-                                
-                            if old_name != new_desc:
-                                inv_by_name = db.collection("Inventory").where("item_name", "==", old_name).stream()
-                                for inv_doc in inv_by_name:
-                                    db.collection("Inventory").document(inv_doc.id).update({
-                                        "item_name": new_desc,
-                                        "item_id": st.session_state['edit_item_id']
-                                    })
-                                    count_updated += 1
-
-                            log_action("עריכת פריט", f"{old_name} -> {new_desc}")
-                            st.success(f"עודכן! ({count_updated} במלאי)")
-                            st.session_state['edit_item_id'] = None
-                            st.rerun()
-                        
-                        if c_cancel.form_submit_button("ביטול"):
-                            st.session_state['edit_item_id'] = None
-                            st.rerun()
-            except Exception as e:
-                st.error(f"שגיאה: {e}")
-                st.session_state['edit_item_id'] = None
-
+                        log_action("עריכת פריט", nd)
+                        st.session_state['edit_item_id'] = None
+                        st.rerun()
+                if st.button("ביטול"): st.session_state['edit_item_id'] = None; st.rerun()
         else:
-            for i in db.collection("Items").stream():
+            items_stream = db.collection("Items").stream()
+            for i in items_stream:
                 it = i.to_dict()
                 cols = st.columns([4, 1, 1])
                 cols[0].write(f"🔹 {it['description']} ({it['internal_sku']})")
-                
                 if cols[1].button("🗑️", key=f"del_{i.id}"):
                     db.collection("Items").document(i.id).delete()
                     log_action("מחיקת פריט", it['description'])
                     st.rerun()
-                
                 if cols[2].button("✏️", key=f"edit_{i.id}"):
                     st.session_state['edit_item_id'] = i.id
                     st.rerun()
 
     # ==========================================
-    # 7. ניהול משתמשים (כולל בקשות איפוס סיסמה)
+    # 7. ניהול משתמשים
     # ==========================================
     elif choice_key == "users":
-        st.subheader("👥 ניהול צוות")
-        
-        # הפרדה בין ממתינים למאושרים
-        users_stream = list(db.collection("Users").stream())
-        pending = [u for u in users_stream if not u.to_dict().get('approved')]
-        reset_reqs = [u for u in users_stream if u.to_dict().get('reset_requested')]
-        approved = [u for u in users_stream if u.to_dict().get('approved')]
-        
-        # 1. בקשות איפוס סיסמה (החלק החדש והחשוב)
-        if reset_reqs:
-            st.warning(f"🔒 {len(reset_reqs)} בקשות לאיפוס סיסמה")
-            for u in reset_reqs:
-                data = u.to_dict()
-                with st.container(border=True):
-                    st.write(f"**{data['email']}** מבקש לאפס סיסמה")
-                    new_temp_pass = st.text_input(f"קבע סיסמה חדשה ל-{data['email']}", value="123456", key=f"rst_{u.id}")
-                    if st.button("אפס ושלח", key=f"btn_rst_{u.id}"):
-                        db.collection("Users").document(u.id).update({
-                            "password": new_temp_pass,
-                            "reset_requested": False
-                        })
-                        log_action("איפוס סיסמה", f"אופסה סיסמה ל-{data['email']}")
-                        st.success(f"הסיסמה שונתה ל-{new_temp_pass}. נא לעדכן את העובד.")
-                        st.rerun()
-
-        # 2. משתמשים חדשים שממתינים לאישור
-        if pending:
-            st.divider()
-            st.error(f"⏳ {len(pending)} משתמשים חדשים ממתינים")
-            for u in pending:
-                data = u.to_dict()
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([3, 1, 1])
-                    c1.write(f"**{data['email']}** ({data.get('role')})")
-                    if c2.button("אשר", key=f"ap_{u.id}", use_container_width=True):
-                        db.collection("Users").document(u.id).update({"approved": True})
-                        log_action("אישור משתמש", u.id)
-                        st.rerun()
-                    if c3.button("מחק", key=f"dl_{u.id}", use_container_width=True):
-                        db.collection("Users").document(u.id).delete()
-                        log_action("מחיקת בקשת משתמש", u.id)
-                        st.rerun()
-
-        st.divider()
-        # 3. רשימת משתמשים פעילים
-        st.write("✅ משתמשים פעילים")
-        for u in approved:
-            data = u.to_dict()
-            with st.expander(f"{data['email']} - {data.get('role')}"):
-                c1, c2 = st.columns(2)
-                
-                new_role = c1.selectbox("שנה תפקיד", ["יוזר מושך", "מנהל מלאי"], index=0 if data.get('role') == "יוזר מושך" else 1, key=f"rol_{u.id}")
-                if c1.button("עדכן תפקיד", key=f"upd_{u.id}"):
-                    db.collection("Users").document(u.id).update({"role": new_role})
-                    log_action("שינוי תפקיד", f"{u.id} -> {new_role}")
-                    st.success("עודכן")
-                    st.rerun()
-                
-                if c2.button("מחק משתמש", key=f"delu_{u.id}"):
-                    db.collection("Users").document(u.id).delete()
-                    log_action("מחיקת משתמש", u.id)
-                    st.warning("המשתמש נמחק")
-                    st.rerun()
+        for u in db.collection("Users").stream():
+            d = u.to_dict()
+            with st.expander(f"{d['email']} ({'ממתין' if not d.get('approved') else 'פעיל'})"):
+                if not d.get('approved'): 
+                    if st.button("אשר", key=f"a_{u.id}"): db.collection("Users").document(u.id).update({"approved": True}); st.rerun()
+                if d.get('reset_requested'):
+                    if st.button("אפס", key=f"r_{u.id}"): db.collection("Users").document(u.id).update({"password": "123456", "reset_requested": False}); st.rerun()
 
     # ==========================================
-    # 8. יומן פעילות
+    # 8. לוגים
     # ==========================================
     elif choice_key == "logs":
-        st.subheader("📜 יומן פעילות")
-        try:
-            logs = db.collection("Logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).stream()
-            
-            data = []
-            for log in logs:
-                l = log.to_dict()
-                data.append({
-                    "זמן": l['timestamp'].strftime("%d/%m %H:%M"),
-                    "משתמש": l['user'],
-                    "פעולה": l['action'],
-                    "פרטים": l['details']
-                })
-            
-            if data:
-                st.table(data)
-            else:
-                st.info("היומן ריק")
-        except Exception as e:
-            st.error(f"לא ניתן לטעון לוגים: {e}")
+        st.dataframe([l.to_dict() for l in db.collection("Logs").order_by("timestamp", direction="DESCENDING").limit(20).stream()])
