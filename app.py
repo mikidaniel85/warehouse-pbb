@@ -7,20 +7,29 @@ import json
 # הגדרות תצוגה
 st.set_page_config(page_title="ניהול מלאי שרוולים", layout="centered")
 
-# --- 1. התחברות ל-Firebase (עמיד לתקלות) ---
+# --- 1. התחברות ל-Firebase (גרסה משוריינת) ---
 if not firebase_admin._apps:
     try:
+        # אופציה א: אנחנו בענן של Streamlit (קוראים מהסודות)
         if "firebase" in st.secrets:
             key_dict = dict(st.secrets["firebase"])
+            # תיקון לבעיית ירידת שורה במפתח הפרטי
             if "private_key" in key_dict:
                 key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             cred = credentials.Certificate(key_dict)
+            firebase_admin.initialize_app(cred)
+            
+        # אופציה ב: אנחנו במחשב מקומי (קוראים מהקובץ JSON)
         else:
             cred = credentials.Certificate("serviceAccountKey.json")
-        firebase_admin.initialize_app(cred)
-    except Exception as e:
-        st.error(f"שגיאה בהתחברות ל-Firebase: {e}")
+            firebase_admin.initialize_app(cred)
 
+    except Exception as e:
+        st.error(f"❌ שגיאה בהתחברות ל-Firebase: {e}")
+        st.info("💡 טיפ: אם אתה במחשב מקומי, וודא שקובץ serviceAccountKey.json נמצא בתיקייה.")
+        st.stop()
+
+# יצירת הלקוח למסד הנתונים
 db = firestore.client()
 
 # --- זיכרון משתמש ---
