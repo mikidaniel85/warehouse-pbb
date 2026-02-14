@@ -41,6 +41,13 @@ if 'active_action' not in st.session_state:
 if 'last_scan' not in st.session_state:
     st.session_state['last_scan'] = ""
 
+# --- טעינת מנוע OCR לזיכרון (Cache) ---
+# זה מונע את טעינת המודל הכבד בכל צילום מחדש
+@st.cache_resource
+def load_ocr_reader():
+    import easyocr
+    return easyocr.Reader(['en'])
+
 # --- פונקציות עזר ---
 def log_action(action, details):
     db.collection("Logs").add({
@@ -86,25 +93,42 @@ def preprocess_image(image_pil):
     except:
         return np.array(image_pil)
 
-# --- לוגיקה לעיבוד וסריקה (משותפת לשני סוגי המצלמות) ---
+# --- לוגיקה לעיבוד וסריקה (הגרסה היציבה) ---
 def process_scan(img_file):
+    status_box = st.empty() # קופסה להודעות זמניות
     try:
-        import easyocr
-        with st.spinner('מפענח טקסט (פיקוס חכם)...'):
-            orig_image = Image.open(img_file)
-            processed_img = preprocess_image(orig_image)
-            reader = easyocr.Reader(['en'])
-            result = reader.readtext(processed_img, detail=0)
-            if result:
-                raw_text = " ".join(result).upper()
-                st.session_state['last_scan'] = raw_text
-                st.success("הסריקה נקלטה!")
-                return True
-            else:
-                st.warning("לא זוהה טקסט.")
-                return False
+        status_box.info("📥 תמונה נקלטה, מתחיל עיבוד...")
+        
+        img_file.seek(0)
+        orig_image = Image.open(img_file)
+        
+        # --- מנגנון הגנה מקריסה (Resize) ---
+        # אם התמונה ענקית (מעל 1000px), נקטין אותה
+        if orig_image.width > 1000:
+            ratio = 1000 / float(orig_image.width)
+            new_height = int((float(orig_image.height) * ratio))
+            orig_image = orig_image.resize((1000, new_height), Image.Resampling.LANCZOS)
+            # status_box.info("📉 מקטין תמונה לחיסכון בזיכרון...")
+        
+        # שיפור תמונה
+        processed_img = preprocess_image(orig_image)
+        
+        # פענוח
+        status_box.info("🔍 מפענח טקסט...")
+        reader = load_ocr_reader() # שימוש בגרסה השמורה בזיכרון
+        result = reader.readtext(processed_img, detail=0)
+        
+        if result:
+            raw_text = " ".join(result).upper()
+            st.session_state['last_scan'] = raw_text
+            status_box.success("✅ הסריקה הצליחה!")
+            return True
+        else:
+            status_box.warning("⚠️ לא זוהה טקסט ברור.")
+            return False
+            
     except Exception as e:
-        st.error(f"שגיאה: {e}")
+        status_box.error(f"❌ שגיאה: {e}")
         return False
 
 # --- מסך כניסה ---
@@ -192,30 +216,25 @@ else:
     st.title(f"📦 {menu[choice_key]}")
 
     # ==========================================
-    # 1. חיפוש חכם (עם שתי אופציות צילום)
+    # 1. חיפוש חכם (עם ניהול זיכרון משופר)
     # ==========================================
     if choice_key == "search":
         
-        # --- אזור סריקה משודרג ---
-        with st.expander("📸 סריקת תגית (בחר שיטה)", expanded=True):
-            scan_method = st.radio("בחר שיטת צילום:", ["מצלמה מהירה (בתוך האתר)", "מצלמה איכותית (דרך הטלפון)"], horizontal=True)
+        with st.expander("📸 סריקת תגית", expanded=True):
+            scan_method = st.radio("בחר שיטה:", ["מצלמה מהירה", "מצלמה איכותית (העלאה)"], horizontal=True)
             
             img_file = None
-            
-            # אופציה 1: מצלמה מהירה (סטרים-ליט)
-            if scan_method == "מצלמה מהירה (בתוך האתר)":
+            if scan_method == "מצלמה מהירה":
                 img_file = st.camera_input("צלם תגית")
-            
-            # אופציה 2: מצלמה איכותית (העלאת קובץ)
             else:
-                st.info("💡 בנייד: לחץ למטה ואז בחר ב-'Camera'/'מצלמה'. זה יאפשר לך זום ופוקוס!")
-                img_file = st.file_uploader("צלם תמונה איכותית", type=['jpg', 'png', 'jpeg'])
+                st.info("💡 בנייד: בחר ב-'Camera' לצילום איכותי.")
+                img_file = st.file_uploader("צלם/בחר תמונה", type=['jpg', 'png', 'jpeg'])
 
-            # אם התקבלה תמונה (לא משנה מאיזו שיטה) -> שלח לפענוח
+            # מנגנון למניעת לופים
             if img_file:
-                 # מנגנון למניעת פענוח כפול של אותה תמונה
                  file_id = f"{img_file.name}-{img_file.size}"
                  if 'processed_file' not in st.session_state or st.session_state['processed_file'] != file_id:
+                     # ביצוע הסריקה
                      if process_scan(img_file):
                          st.session_state['processed_file'] = file_id
                      else:
@@ -310,13 +329,11 @@ else:
                 st.session_state['active_action'] = None
                 st.rerun()
 
-    # (שאר החלקים נשארים אותו דבר כמו בגרסאות הקודמות - approve, stock_in, pull וכו')
-    # למען הקיצור לא העתקתי את כולם שוב, אבל חשוב להשאיר אותם בקובץ המלא שלך!
-    # ==========================================
-    # המשך הקוד זהה לגרסה 11 (משיכה, קליטה, ניהול פריטים...)
+    # (שאר החלקים כמו approve, stock_in, pull זהים לגרסאות הקודמות ונשארו ללא שינוי)
+    # לצורך החיסכון לא הדבקתי אותם שוב, אבל וודא שהם שם!
     # ==========================================
     elif choice_key == "approve":
-         # ... (אותו קוד כמו מקודם) ...
+         # ...
          reqs = db.collection("Requests").where("status", "==", "pending").stream()
          found = False
          for req in reqs:
@@ -338,7 +355,7 @@ else:
          if not found: st.info("אין בקשות.")
 
     elif choice_key == "stock_in":
-        # ... (אותו קוד) ...
+        # ...
         items = {i.to_dict()['description']: i.id for i in db.collection("Items").stream()}
         whs = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
         if items and whs:
@@ -357,7 +374,7 @@ else:
                     st.success("נקלט!")
 
     elif choice_key == "pull":
-        # ... (אותו קוד) ...
+        # ...
         inv = db.collection("Inventory").where("quantity", ">", 0).stream()
         opts = {f"{d.to_dict()['item_name']} ({d.to_dict()['warehouse']})": d.id for d in inv}
         if opts:
@@ -370,7 +387,7 @@ else:
                     st.success("נשלח!")
 
     elif choice_key == "warehouses":
-        # ... (אותו קוד) ...
+        # ...
         with st.form("nwh"):
             if st.form_submit_button("הוסף מחסן"):
                 db.collection("Warehouses").add({"name": st.text_input("שם")})
@@ -381,7 +398,7 @@ else:
             if c2.button("🗑️", key=w.id): db.collection("Warehouses").document(w.id).delete(); st.rerun()
 
     elif choice_key == "items":
-        # ... (אותו קוד) ...
+        # ...
         with st.expander("הוסף פריט"):
             d, r, y = st.text_input("תיאור"), st.text_input("מק\"ט רשות"), st.text_input("יצרן")
             if st.button("שמור"): db.collection("Items").add({"description": d, "internal_sku": r, "manufacturer_sku": y}); st.rerun()
@@ -390,7 +407,7 @@ else:
             if st.button("מחק", key=i.id): db.collection("Items").document(i.id).delete(); st.rerun()
 
     elif choice_key == "users":
-        # ... (אותו קוד) ...
+        # ...
         for u in db.collection("Users").stream():
             d = u.to_dict()
             with st.expander(f"{d['email']} ({'ממתין' if not d.get('approved') else 'פעיל'})"):
@@ -400,5 +417,5 @@ else:
                     if st.button("אפס", key=f"r_{u.id}"): db.collection("Users").document(u.id).update({"password": "123456", "reset_requested": False}); st.rerun()
 
     elif choice_key == "logs":
-        # ... (אותו קוד) ...
+        # ...
         st.dataframe([l.to_dict() for l in db.collection("Logs").order_by("timestamp", direction="DESCENDING").limit(20).stream()])
