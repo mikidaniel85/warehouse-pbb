@@ -135,7 +135,6 @@ else:
 
     if st.sidebar.button("התנתק"): logout()
 
-    # תפריט
     if st.session_state['user_role'] == "מנהל מלאי":
         menu = {
             "search": "חיפוש ופעולות",
@@ -166,27 +165,23 @@ else:
         found_item_ids_in_inv = set()
         
         if search_q:
-            # שלב 1: חיפוש במלאי הקיים
             for doc in inv_stream:
                 d = doc.to_dict()
                 item_id = d.get('item_id')
                 catalog_data = all_items_catalog.get(item_id, {})
                 sku = catalog_data.get('internal_sku', '')
                 
-                # בדיקת התאמה
                 if (search_q.lower() in d['item_name'].lower()) or (search_q in str(sku)):
                     d['display_sku'] = sku
                     found_inventory.append(doc)
                     found_item_ids_in_inv.add(item_id)
 
-            # שלב 2: חיפוש בקטלוג
             found_catalog_only = []
             for item_id, data in all_items_catalog.items():
                 if item_id not in found_item_ids_in_inv: 
                     if (search_q.lower() in data['description'].lower()) or (search_q in str(data['internal_sku'])):
                         found_catalog_only.append((item_id, data))
 
-            # --- תצוגת תוצאות ---
             if found_inventory:
                 st.success(f"נמצאו {len(found_inventory)} פריטים במלאי")
                 for doc in found_inventory:
@@ -199,7 +194,7 @@ else:
                             c1.caption(f"🆔 {sku_display} | 📍 {d['warehouse']} | שורה: {d.get('row')} | כמות: **{d['quantity']}**")
                         else:
                             c1.caption(f"📍 {d['warehouse']} | שורה: {d.get('row')} | כמות: **{d['quantity']}**")
-                            
+                        
                         if c2.button("📤 משוך", key=f"p_{doc.id}"):
                             st.session_state['active_action'] = {'type': 'pull', 'id': doc.id, 'name': d['item_name']}
                             st.rerun()
@@ -209,7 +204,7 @@ else:
                                 st.rerun()
             
             if found_catalog_only:
-                st.info(f"נמצאו {len(found_catalog_only)} פריטים נוספים בקטלוג (ללא מלאי)")
+                st.info(f"נמצאו {len(found_catalog_only)} פריטים בקטלוג (ללא מלאי)")
                 for item_id, data in found_catalog_only:
                     with st.container(border=True):
                         st.markdown(f"**{data['description']}**")
@@ -221,7 +216,6 @@ else:
         elif not search_q:
              st.info("הקלד לחיפוש...")
 
-        # --- אזור פעולות אקטיביות ---
         if st.session_state['active_action']:
             action = st.session_state['active_action']
             st.divider()
@@ -246,9 +240,8 @@ else:
                 with st.form("act_move"):
                     whs_list = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
                     new_wh = st.selectbox("לאן להעביר?", whs_list)
-                    st.caption("מיקום חדש (הזן מספרים למקלדת נוחה):")
+                    st.caption("מיקום חדש (מספרים לנוחות בנייד):")
                     
-                    # תיקון למקלדת בנייד
                     nr = st.number_input("שורה (מספר)", min_value=1, step=1, value=1)
                     nc = st.text_input("עמודה (טקסט)")
                     nf = st.number_input("קומה (מספר)", min_value=1, step=1, value=1)
@@ -293,55 +286,84 @@ else:
          if not found: st.info("אין בקשות.")
 
     # ==========================================
-    # 3. קליטת מלאי
+    # 3. קליטת מלאי (עם פתרון למקלדת בנייד)
     # ==========================================
     elif choice_key == "stock_in":
         items = {i.to_dict()['description']: i.id for i in db.collection("Items").stream()}
         whs = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
+        
         if items and whs:
-            si = st.selectbox("בחר פריט (ניתן להקליד לחיפוש)", list(items.keys()))
+            # --- הפתרון: שורת חיפוש נפרדת מעל הבחירה ---
+            st.write("🔽 **שלב 1: חיפוש פריט**")
+            search_item_text = st.text_input("הקלד כאן כדי לפתוח מקלדת ולסנן את הרשימה", key="si_search")
             
-            with st.form("sin"):
-                wh = st.selectbox("מחסן", whs)
-                st.caption("מיקום (הזן מספרים למקלדת נוחה):")
+            # סינון הרשימה לפי מה שהוקלד
+            filtered_items = list(items.keys())
+            if search_item_text:
+                filtered_items = [k for k in filtered_items if search_item_text.lower() in k.lower()]
+            
+            if filtered_items:
+                si = st.selectbox("בחר פריט מהרשימה המסוננת", filtered_items, key="si_select")
                 
-                # תיקון למקלדת בנייד
-                r = st.number_input("שורה (מספר)", min_value=1, step=1, value=1)
-                c = st.text_input("עמודה (טקסט)")
-                f = st.number_input("קומה (מספר)", min_value=1, step=1, value=1)
-                
-                q = st.number_input("כמות", min_value=1, step=1, value=1)
-                
-                if st.form_submit_button("קלוט מלאי"):
-                    # המרת המספרים לטקסט למסד הנתונים
-                    str_r, str_f = str(r), str(f)
-                    loc = f"{wh}_{str_r}_{c}_{str_f}_{items[si]}"
-                    ref = db.collection("Inventory").document(loc)
-                    if ref.get().exists: 
-                        ref.update({"quantity": ref.get().to_dict()['quantity'] + q})
-                    else: 
-                        ref.set({
-                            "item_name": si, "warehouse": wh, 
-                            "row": str_r, "column": c, "floor": str_f, 
-                            "quantity": int(q), "item_id": items[si]
-                        })
-                    log_action("קליטה", f"{q} {si}")
-                    st.success("נקלט בהצלחה!")
+                with st.form("sin"):
+                    wh = st.selectbox("מחסן", whs)
+                    st.caption("מיקום (מספרים לנוחות בנייד):")
+                    
+                    r = st.number_input("שורה (מספר)", min_value=1, step=1, value=1)
+                    c = st.text_input("עמודה (טקסט)")
+                    f = st.number_input("קומה (מספר)", min_value=1, step=1, value=1)
+                    
+                    q = st.number_input("כמות", min_value=1, step=1, value=1)
+                    
+                    if st.form_submit_button("קלוט מלאי"):
+                        str_r, str_f = str(r), str(f)
+                        loc = f"{wh}_{str_r}_{c}_{str_f}_{items[si]}"
+                        ref = db.collection("Inventory").document(loc)
+                        if ref.get().exists: 
+                            ref.update({"quantity": ref.get().to_dict()['quantity'] + q})
+                        else: 
+                            ref.set({
+                                "item_name": si, "warehouse": wh, 
+                                "row": str_r, "column": c, "floor": str_f, 
+                                "quantity": int(q), "item_id": items[si]
+                            })
+                        log_action("קליטה", f"{q} {si}")
+                        st.success("נקלט בהצלחה!")
+            else:
+                st.warning("לא נמצאו פריטים תואמים לחיפוש.")
 
     # ==========================================
-    # 4. משיכת מלאי (ידנית)
+    # 4. משיכת מלאי (עם פתרון למקלדת בנייד)
     # ==========================================
     elif choice_key == "pull":
         inv = db.collection("Inventory").where("quantity", ">", 0).stream()
-        opts = {f"{d.to_dict()['item_name']} ({d.to_dict()['warehouse']})": d.id for d in inv}
+        opts = {f"{d.to_dict()['item_name']} | {d.to_dict()['warehouse']}": d.id for d in inv}
+        
         if opts:
-            k = st.selectbox("פריט", list(opts.keys()))
-            with st.form("pf"):
-                q = st.number_input("כמות", min_value=1, step=1, value=1)
-                rs = st.text_input("סיבה")
-                if st.form_submit_button("שלח"):
-                    db.collection("Requests").add({"user_email": st.session_state['user_email'], "item_name": k.split('(')[0], "location_id": opts[k], "quantity": q, "reason": rs, "status": "pending", "timestamp": datetime.now()})
-                    st.success("נשלח!")
+            # --- הפתרון: שורת חיפוש נפרדת ---
+            st.write("🔽 **שלב 1: חיפוש במלאי**")
+            search_pull_text = st.text_input("הקלד כאן כדי לפתוח מקלדת ולסנן", key="pull_search")
+            
+            filtered_opts = list(opts.keys())
+            if search_pull_text:
+                filtered_opts = [k for k in filtered_opts if search_pull_text.lower() in k.lower()]
+            
+            if filtered_opts:
+                k = st.selectbox("בחר פריט למשיכה", filtered_opts, key="pull_select")
+                
+                with st.form("pf"):
+                    q = st.number_input("כמות", min_value=1, step=1, value=1)
+                    rs = st.text_input("סיבה")
+                    if st.form_submit_button("שלח"):
+                        db.collection("Requests").add({
+                            "user_email": st.session_state['user_email'], 
+                            "item_name": k.split('|')[0].strip(), 
+                            "location_id": opts[k], 
+                            "quantity": int(q), "reason": rs, "status": "pending", "timestamp": datetime.now()
+                        })
+                        st.success("נשלח!")
+            else:
+                st.warning("לא נמצאו פריטים במלאי.")
         else:
             st.warning("המחסן ריק.")
 
@@ -487,7 +509,7 @@ else:
                     st.rerun()
 
     # ==========================================
-    # 8. יומן פעילות (משוחזר ומלא!)
+    # 8. יומן פעילות
     # ==========================================
     elif choice_key == "logs":
         st.subheader("📜 יומן פעילות")
@@ -497,7 +519,6 @@ else:
             data = []
             for log in logs:
                 l = log.to_dict()
-                # הגנה למקרה שאין Timestamp תקין
                 ts = l.get('timestamp')
                 time_str = ts.strftime("%d/%m %H:%M") if ts else "?"
                 
@@ -509,7 +530,6 @@ else:
                 })
             
             if data:
-                # שימוש ב-Table למראה נקי וברור יותר
                 st.table(data)
             else:
                 st.info("היומן ריק")
