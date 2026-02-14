@@ -7,25 +7,20 @@ import json
 # הגדרות תצוגה
 st.set_page_config(page_title="ניהול מלאי שרוולים", layout="centered")
 
-# --- 1. התחברות ל-Firebase (החלק המתוקן) ---
+# --- 1. התחברות ל-Firebase (עמיד לתקלות) ---
 if not firebase_admin._apps:
     try:
-        # בדיקה אם אנחנו בענן (Streamlit Cloud)
         if "firebase" in st.secrets:
             key_dict = dict(st.secrets["firebase"])
-            # תיקון ירידות שורה במפתח
             if "private_key" in key_dict:
                 key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             cred = credentials.Certificate(key_dict)
         else:
-            # אנחנו במחשב מקומי
             cred = credentials.Certificate("serviceAccountKey.json")
-            
         firebase_admin.initialize_app(cred)
     except Exception as e:
         st.error(f"שגיאה בהתחברות ל-Firebase: {e}")
 
-# --- חשוב מאוד: השורה הזו חייבת להיות כאן, מחוץ ל-if ---
 db = firestore.client()
 
 # --- זיכרון משתמש ---
@@ -44,8 +39,8 @@ if 'active_action' not in st.session_state:
 def log_action(action, details):
     db.collection("Logs").add({
         "timestamp": datetime.now(),
-        "user": st.session_state['user_email'],
-        "role": st.session_state['user_role'],
+        "user": st.session_state.get('user_email', 'Guest'),
+        "role": st.session_state.get('user_role', 'None'),
         "action": action,
         "details": details
     })
@@ -59,27 +54,31 @@ def logout():
     st.session_state['active_action'] = None
     st.rerun()
 
-def get_pending_requests_count():
+def get_counts():
+    """מחזיר מספר בקשות ומשתמשים ממתינים/מבקשי איפוס"""
     try:
-        return len(list(db.collection("Requests").where("status", "==", "pending").stream()))
+        reqs = len(list(db.collection("Requests").where("status", "==", "pending").stream()))
+        # משתמשים שלא אושרו או שביקשו איפוס סיסמה
+        users_pending = 0
+        all_users = db.collection("Users").stream()
+        for u in all_users:
+            ud = u.to_dict()
+            if not ud.get('approved', False) or ud.get('reset_requested', False):
+                users_pending += 1
+        return reqs, users_pending
     except:
-        return 0
+        return 0, 0
 
-def get_pending_users_count():
-    try:
-        return len(list(db.collection("Users").where("approved", "==", False).stream()))
-    except:
-        return 0
-
-# --- מסך כניסה ---
+# --- מסך כניסה והרשמה ---
 if not st.session_state['logged_in']:
     st.title("📦 מערכת מלאי גשרי עליה")
-    tab1, tab2 = st.tabs(["כניסה", "הרשמה"])
+    # הוספנו טאב שלישי: שכחתי סיסמה
+    tab1, tab2, tab3 = st.tabs(["כניסה", "הרשמה", "שכחתי סיסמה 🔒"])
+    
     with tab1:
         email = st.text_input("אימייל", key="login_email")
         pw = st.text_input("סיסמה", type="password", key="login_pw")
         if st.button("התחבר", use_container_width=True):
-            # כאן הייתה השגיאה שלך - עכשיו db בטוח קיים
             user_doc = db.collection("Users").document(email).get()
             if user_doc.exists:
                 u_data = user_doc.to_dict()
@@ -95,27 +94,55 @@ if not st.session_state['logged_in']:
                     st.error("סיסמה שגויה.")
             else:
                 st.error("משתמש לא נמצא.")
+    
     with tab2:
         reg_email = st.text_input("אימייל חדש")
         reg_pw = st.text_input("סיסמה חדשה", type="password")
         role = st.radio("תפקיד", ["יוזר מושך", "מנהל מלאי"])
         if st.button("הירשם"):
             db.collection("Users").document(reg_email).set({"email": reg_email, "password": reg_pw, "role": role, "approved": False})
-            st.warning("נשלח לאישור.")
+            st.warning("נשלח לאישור מנהל.")
+            
+    # --- טאב שכחתי סיסמה (חדש!) ---
+    with tab3:
+        st.write("הזן את המייל שלך כדי לשלוח בקשת איפוס למנהל.")
+        reset_email = st.text_input("אימייל לשחזור")
+        if st.button("שלח בקשת איפוס"):
+            doc_ref = db.collection("Users").document(reset_email)
+            if doc_ref.get().exists:
+                # סימון דגל 'reset_requested' למשתמש
+                doc_ref.update({"reset_requested": True})
+                st.success("הבקשה נשלחה! פנה לאבי או אהרון לקבלת סיסמה זמנית.")
+            else:
+                st.error("המייל לא קיים במערכת.")
 
 # --- אפליקציה ראשית ---
 else:
-    req_count = get_pending_requests_count()
-    usr_count = get_pending_users_count()
+    req_c, usr_c = get_counts()
+    req_alert = f"🔴 ({req_c})" if req_c > 0 else ""
+    usr_alert = f"🔴 ({usr_c})" if usr_c > 0 else ""
     
-    req_alert = f"🔴 ({req_count})" if req_count > 0 else ""
-    usr_alert = f"🔴 ({usr_count})" if usr_count > 0 else ""
-    
+    # סרגל צד - אזור אישי
     st.sidebar.write(f"מחובר: **{st.session_state['user_email']}**")
     st.sidebar.caption(f"תפקיד: {st.session_state['user_role']}")
+    
+    # --- שינוי סיסמה אישי (חדש!) ---
+    with st.sidebar.expander("🔐 שינוי סיסמה"):
+        new_pass_1 = st.text_input("סיסמה חדשה", type="password", key="np1")
+        if st.button("עדכן סיסמה"):
+            if len(new_pass_1) > 3:
+                db.collection("Users").document(st.session_state['user_email']).update({
+                    "password": new_pass_1,
+                    "reset_requested": False # איפוס הדגל אם היה
+                })
+                st.success("הסיסמה שונתה!")
+                log_action("שינוי סיסמה", "המשתמש שינה את סיסמתו")
+            else:
+                st.error("סיסמה קצרה מדי")
+
     if st.sidebar.button("התנתק"): logout()
 
-    # תפריט לפי הרשאות
+    # תפריט
     if st.session_state['user_role'] == "מנהל מלאי":
         menu = {
             "search": "חיפוש ופעולות",
@@ -419,18 +446,38 @@ else:
                     st.rerun()
 
     # ==========================================
-    # 7. ניהול משתמשים
+    # 7. ניהול משתמשים (כולל בקשות איפוס סיסמה)
     # ==========================================
     elif choice_key == "users":
-        st.subheader("👥 משתמשים במערכת")
+        st.subheader("👥 ניהול צוות")
         
         # הפרדה בין ממתינים למאושרים
         users_stream = list(db.collection("Users").stream())
         pending = [u for u in users_stream if not u.to_dict().get('approved')]
+        reset_reqs = [u for u in users_stream if u.to_dict().get('reset_requested')]
         approved = [u for u in users_stream if u.to_dict().get('approved')]
         
+        # 1. בקשות איפוס סיסמה (החלק החדש והחשוב)
+        if reset_reqs:
+            st.warning(f"🔒 {len(reset_reqs)} בקשות לאיפוס סיסמה")
+            for u in reset_reqs:
+                data = u.to_dict()
+                with st.container(border=True):
+                    st.write(f"**{data['email']}** מבקש לאפס סיסמה")
+                    new_temp_pass = st.text_input(f"קבע סיסמה חדשה ל-{data['email']}", value="123456", key=f"rst_{u.id}")
+                    if st.button("אפס ושלח", key=f"btn_rst_{u.id}"):
+                        db.collection("Users").document(u.id).update({
+                            "password": new_temp_pass,
+                            "reset_requested": False
+                        })
+                        log_action("איפוס סיסמה", f"אופסה סיסמה ל-{data['email']}")
+                        st.success(f"הסיסמה שונתה ל-{new_temp_pass}. נא לעדכן את העובד.")
+                        st.rerun()
+
+        # 2. משתמשים חדשים שממתינים לאישור
         if pending:
-            st.error(f"יש {len(pending)} משתמשים ממתינים לאישור!")
+            st.divider()
+            st.error(f"⏳ {len(pending)} משתמשים חדשים ממתינים")
             for u in pending:
                 data = u.to_dict()
                 with st.container(border=True):
@@ -444,8 +491,9 @@ else:
                         db.collection("Users").document(u.id).delete()
                         log_action("מחיקת בקשת משתמש", u.id)
                         st.rerun()
-            st.divider()
 
+        st.divider()
+        # 3. רשימת משתמשים פעילים
         st.write("✅ משתמשים פעילים")
         for u in approved:
             data = u.to_dict()
@@ -488,4 +536,4 @@ else:
             else:
                 st.info("היומן ריק")
         except Exception as e:
-            st.error(f"לא ניתן לטעון לוגים (אולי חסר אינדקס ב-Firebase): {e}")
+            st.error(f"לא ניתן לטעון לוגים: {e}")
