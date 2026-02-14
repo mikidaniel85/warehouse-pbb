@@ -1,7 +1,7 @@
 streamlit
 firebase-admin
 google-cloud-firestore
-easyocr
+pytesseract
 opencv-python-headless
 numpy
 pillow

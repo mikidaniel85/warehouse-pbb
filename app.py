@@ -5,6 +5,8 @@ from datetime import datetime
 import json
 import numpy as np
 from PIL import Image
+import pytesseract # המנוע הקל החדש
+import cv2
 
 # --- הגדרות תצוגה ---
 st.set_page_config(page_title="ניהול מלאי שרוולים", layout="centered")
@@ -41,13 +43,6 @@ if 'active_action' not in st.session_state:
 if 'last_scan' not in st.session_state:
     st.session_state['last_scan'] = ""
 
-# --- טעינת מנוע OCR לזיכרון (Cache) ---
-# זה מונע את טעינת המודל הכבד בכל צילום מחדש
-@st.cache_resource
-def load_ocr_reader():
-    import easyocr
-    return easyocr.Reader(['en'])
-
 # --- פונקציות עזר ---
 def log_action(action, details):
     db.collection("Logs").add({
@@ -80,55 +75,59 @@ def get_counts():
     except:
         return 0, 0
 
-def preprocess_image(image_pil):
+# --- עיבוד תמונה חכם וקל ---
+def process_image_for_ocr(image_pil):
     try:
-        import cv2
+        # הקטנת תמונה דרסטית לחיסכון בזיכרון (מקסימום 800 פיקסל רוחב)
+        image_pil.thumbnail((800, 800)) 
+        
         img = np.array(image_pil)
+        
+        # המרה לשחור לבן
         if len(img.shape) == 3:
             gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         else:
             gray = img
-        processed = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+            
+        # ניקוי רעשים וחידוד (Thresholding)
+        # זה הופך את הטקסט לשחור בולט ואת הרקע ללבן נקי
+        processed = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        
         return processed
-    except:
+    except Exception as e:
         return np.array(image_pil)
 
-# --- לוגיקה לעיבוד וסריקה (הגרסה היציבה) ---
-def process_scan(img_file):
-    status_box = st.empty() # קופסה להודעות זמניות
+# --- מנוע הסריקה החדש (Tesseract) ---
+def run_scanner(img_file):
+    status = st.empty()
     try:
-        status_box.info("📥 תמונה נקלטה, מתחיל עיבוד...")
+        status.info("📸 מעבד תמונה...")
+        image = Image.open(img_file)
         
-        img_file.seek(0)
-        orig_image = Image.open(img_file)
+        # 1. עיבוד מקדים
+        processed_img = process_image_for_ocr(image)
         
-        # --- מנגנון הגנה מקריסה (Resize) ---
-        # אם התמונה ענקית (מעל 1000px), נקטין אותה
-        if orig_image.width > 1000:
-            ratio = 1000 / float(orig_image.width)
-            new_height = int((float(orig_image.height) * ratio))
-            orig_image = orig_image.resize((1000, new_height), Image.Resampling.LANCZOS)
-            # status_box.info("📉 מקטין תמונה לחיסכון בזיכרון...")
+        # 2. פענוח עם Tesseract
+        # --psm 6 מניח שזה בלוק אחיד של טקסט (טוב למדבקות)
+        text = pytesseract.image_to_string(processed_img, lang='eng', config='--psm 6')
         
-        # שיפור תמונה
-        processed_img = preprocess_image(orig_image)
+        # 3. ניקוי תוצאות
+        clean_text = " ".join(text.split()).upper()
         
-        # פענוח
-        status_box.info("🔍 מפענח טקסט...")
-        reader = load_ocr_reader() # שימוש בגרסה השמורה בזיכרון
-        result = reader.readtext(processed_img, detail=0)
+        # סינון תווים לא רצויים (משאיר רק אותיות ומספרים)
+        import re
+        clean_text = re.sub(r'[^A-Z0-9\s]', '', clean_text)
         
-        if result:
-            raw_text = " ".join(result).upper()
-            st.session_state['last_scan'] = raw_text
-            status_box.success("✅ הסריקה הצליחה!")
+        if len(clean_text) > 2:
+            st.session_state['last_scan'] = clean_text
+            status.success("✅ הסריקה הצליחה!")
             return True
         else:
-            status_box.warning("⚠️ לא זוהה טקסט ברור.")
+            status.warning("⚠️ לא זוהה טקסט ברור")
             return False
             
     except Exception as e:
-        status_box.error(f"❌ שגיאה: {e}")
+        status.error(f"שגיאה: {e}")
         return False
 
 # --- מסך כניסה ---
@@ -197,7 +196,6 @@ else:
 
     if st.sidebar.button("התנתק"): logout()
 
-    # תפריט
     if st.session_state['user_role'] == "מנהל מלאי":
         menu = {
             "search": "חיפוש ופעולות",
@@ -216,29 +214,25 @@ else:
     st.title(f"📦 {menu[choice_key]}")
 
     # ==========================================
-    # 1. חיפוש חכם (עם ניהול זיכרון משופר)
+    # 1. חיפוש חכם (Tesseract)
     # ==========================================
     if choice_key == "search":
         
         with st.expander("📸 סריקת תגית", expanded=True):
-            scan_method = st.radio("בחר שיטה:", ["מצלמה מהירה", "מצלמה איכותית (העלאה)"], horizontal=True)
+            scan_method = st.radio("בחר:", ["מצלמה מהירה", "העלאה/מצלמה איכותית"], horizontal=True)
             
             img_file = None
             if scan_method == "מצלמה מהירה":
-                img_file = st.camera_input("צלם תגית")
+                img_file = st.camera_input("צלם")
             else:
-                st.info("💡 בנייד: בחר ב-'Camera' לצילום איכותי.")
-                img_file = st.file_uploader("צלם/בחר תמונה", type=['jpg', 'png', 'jpeg'])
+                st.caption("בנייד: בחר 'Camera' לצילום איכותי")
+                img_file = st.file_uploader("בחר תמונה", type=['jpg', 'png', 'jpeg'])
 
-            # מנגנון למניעת לופים
             if img_file:
                  file_id = f"{img_file.name}-{img_file.size}"
                  if 'processed_file' not in st.session_state or st.session_state['processed_file'] != file_id:
-                     # ביצוע הסריקה
-                     if process_scan(img_file):
+                     if run_scanner(img_file):
                          st.session_state['processed_file'] = file_id
-                     else:
-                         st.session_state['processed_file'] = None
 
         # --- מנוע החיפוש ---
         default_val = st.session_state['last_scan']
@@ -248,6 +242,7 @@ else:
         found_items = []
         
         if search_q:
+            # פירוק לטוקנים
             search_tokens = search_q.upper().replace("(", " ").replace(")", " ").split()
             search_tokens = [t for t in search_tokens if len(t) > 2]
 
@@ -256,9 +251,11 @@ else:
                 item_name_upper = str(d.get('item_name', '')).upper()
                 is_match = False
                 
+                # התאמה ישירה
                 if search_q.upper() in item_name_upper:
                     is_match = True
                 
+                # התאמה הפוכה (מק"ט בתוך הרעש)
                 if not is_match:
                     db_item_tokens = item_name_upper.replace("(", " ").replace(")", " ").split()
                     for db_token in db_item_tokens:
@@ -289,51 +286,49 @@ else:
         elif search_q:
             st.warning("לא נמצאו תוצאות.")
 
-        # --- אזור פעולות אקטיביות ---
+        # --- פעולות ---
         if st.session_state['active_action']:
             action = st.session_state['active_action']
             st.divider()
-            st.info(f"מבצע פעולה על: **{action['name']}**")
+            st.info(f"פעולה על: **{action['name']}**")
             
             if action['type'] == 'pull':
                 with st.form("act_pull"):
-                    qty = st.number_input("כמות למשיכה", min_value=1, value=1)
-                    reason = st.text_input("סיבה / שרוול")
-                    if st.form_submit_button("שלח בקשה"):
+                    qty = st.number_input("כמות", min_value=1, value=1)
+                    reason = st.text_input("סיבה")
+                    if st.form_submit_button("שלח"):
                         db.collection("Requests").add({
                             "user_email": st.session_state['user_email'],
                             "item_name": action['name'], "location_id": action['id'],
                             "quantity": qty, "reason": reason, "status": "pending", "timestamp": datetime.now()
                         })
-                        log_action("בקשת משיכה", f"{qty} יח' של {action['name']}")
-                        st.success("הבקשה נשלחה!")
+                        log_action("משיכה", f"{qty} {action['name']}")
+                        st.success("נשלח!")
                         st.session_state['active_action'] = None
                         st.rerun()
 
             elif action['type'] == 'move':
                 with st.form("act_move"):
                     whs_list = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
-                    new_wh = st.selectbox("לאן להעביר?", whs_list)
+                    new_wh = st.selectbox("לאן?", whs_list)
                     c1, c2, c3 = st.columns(3)
-                    nr, nc, nf = c1.text_input("שורה"), c2.text_input("עמ'"), c3.text_input("קומה")
-                    if st.form_submit_button("בצע העברה"):
+                    r, c, f = c1.text_input("שורה"), c2.text_input("עמ'"), c3.text_input("קומה")
+                    if st.form_submit_button("העבר"):
                         db.collection("Inventory").document(action['id']).update({
-                            "warehouse": new_wh, "row": nr, "column": nc, "floor": nf
+                            "warehouse": new_wh, "row": r, "column": c, "floor": f
                         })
-                        log_action("העברת פריט", f"{action['name']} -> {new_wh}")
-                        st.success("הפריט הועבר!")
+                        log_action("העברה", f"{action['name']} -> {new_wh}")
+                        st.success("הועבר!")
                         st.session_state['active_action'] = None
                         st.rerun()
             
-            if st.button("ביטול פעולה"):
+            if st.button("ביטול"):
                 st.session_state['active_action'] = None
                 st.rerun()
 
-    # (שאר החלקים כמו approve, stock_in, pull זהים לגרסאות הקודמות ונשארו ללא שינוי)
-    # לצורך החיסכון לא הדבקתי אותם שוב, אבל וודא שהם שם!
-    # ==========================================
+    # (כל שאר החלקים - approve, stock_in, pull וכו' - נשארים אותו דבר)
+    # יש להעתיק את שאר ה-blocks מהגרסה הקודמת לכאן (כדי לא להאריך את התשובה מדי)
     elif choice_key == "approve":
-         # ...
          reqs = db.collection("Requests").where("status", "==", "pending").stream()
          found = False
          for req in reqs:
@@ -355,7 +350,6 @@ else:
          if not found: st.info("אין בקשות.")
 
     elif choice_key == "stock_in":
-        # ...
         items = {i.to_dict()['description']: i.id for i in db.collection("Items").stream()}
         whs = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
         if items and whs:
@@ -374,7 +368,6 @@ else:
                     st.success("נקלט!")
 
     elif choice_key == "pull":
-        # ...
         inv = db.collection("Inventory").where("quantity", ">", 0).stream()
         opts = {f"{d.to_dict()['item_name']} ({d.to_dict()['warehouse']})": d.id for d in inv}
         if opts:
@@ -387,7 +380,6 @@ else:
                     st.success("נשלח!")
 
     elif choice_key == "warehouses":
-        # ...
         with st.form("nwh"):
             if st.form_submit_button("הוסף מחסן"):
                 db.collection("Warehouses").add({"name": st.text_input("שם")})
@@ -398,7 +390,6 @@ else:
             if c2.button("🗑️", key=w.id): db.collection("Warehouses").document(w.id).delete(); st.rerun()
 
     elif choice_key == "items":
-        # ...
         with st.expander("הוסף פריט"):
             d, r, y = st.text_input("תיאור"), st.text_input("מק\"ט רשות"), st.text_input("יצרן")
             if st.button("שמור"): db.collection("Items").add({"description": d, "internal_sku": r, "manufacturer_sku": y}); st.rerun()
@@ -407,7 +398,6 @@ else:
             if st.button("מחק", key=i.id): db.collection("Items").document(i.id).delete(); st.rerun()
 
     elif choice_key == "users":
-        # ...
         for u in db.collection("Users").stream():
             d = u.to_dict()
             with st.expander(f"{d['email']} ({'ממתין' if not d.get('approved') else 'פעיל'})"):
@@ -417,5 +407,4 @@ else:
                     if st.button("אפס", key=f"r_{u.id}"): db.collection("Users").document(u.id).update({"password": "123456", "reset_requested": False}); st.rerun()
 
     elif choice_key == "logs":
-        # ...
         st.dataframe([l.to_dict() for l in db.collection("Logs").order_by("timestamp", direction="DESCENDING").limit(20).stream()])
