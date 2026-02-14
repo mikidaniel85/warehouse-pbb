@@ -54,6 +54,9 @@ def logout():
     st.session_state['user_role'] = ""
     st.session_state['edit_item_id'] = None
     st.session_state['active_action'] = None
+    # ניקוי דגלי מחיקה אם נשארו
+    keys_to_del = [k for k in st.session_state.keys() if k.startswith('del_')]
+    for k in keys_to_del: del st.session_state[k]
     st.rerun()
 
 def get_counts():
@@ -135,6 +138,7 @@ else:
 
     if st.sidebar.button("התנתק"): logout()
 
+    # תפריט
     if st.session_state['user_role'] == "מנהל מלאי":
         menu = {
             "search": "חיפוש ופעולות",
@@ -286,18 +290,16 @@ else:
          if not found: st.info("אין בקשות.")
 
     # ==========================================
-    # 3. קליטת מלאי (עם פתרון למקלדת בנייד)
+    # 3. קליטת מלאי (עם שורת חיפוש נפרדת)
     # ==========================================
     elif choice_key == "stock_in":
         items = {i.to_dict()['description']: i.id for i in db.collection("Items").stream()}
         whs = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
         
         if items and whs:
-            # --- הפתרון: שורת חיפוש נפרדת מעל הבחירה ---
             st.write("🔽 **שלב 1: חיפוש פריט**")
             search_item_text = st.text_input("הקלד כאן כדי לפתוח מקלדת ולסנן את הרשימה", key="si_search")
             
-            # סינון הרשימה לפי מה שהוקלד
             filtered_items = list(items.keys())
             if search_item_text:
                 filtered_items = [k for k in filtered_items if search_item_text.lower() in k.lower()]
@@ -308,11 +310,9 @@ else:
                 with st.form("sin"):
                     wh = st.selectbox("מחסן", whs)
                     st.caption("מיקום (מספרים לנוחות בנייד):")
-                    
                     r = st.number_input("שורה (מספר)", min_value=1, step=1, value=1)
                     c = st.text_input("עמודה (טקסט)")
                     f = st.number_input("קומה (מספר)", min_value=1, step=1, value=1)
-                    
                     q = st.number_input("כמות", min_value=1, step=1, value=1)
                     
                     if st.form_submit_button("קלוט מלאי"):
@@ -333,14 +333,13 @@ else:
                 st.warning("לא נמצאו פריטים תואמים לחיפוש.")
 
     # ==========================================
-    # 4. משיכת מלאי (עם פתרון למקלדת בנייד)
+    # 4. משיכת מלאי (עם שורת חיפוש נפרדת)
     # ==========================================
     elif choice_key == "pull":
         inv = db.collection("Inventory").where("quantity", ">", 0).stream()
         opts = {f"{d.to_dict()['item_name']} | {d.to_dict()['warehouse']}": d.id for d in inv}
         
         if opts:
-            # --- הפתרון: שורת חיפוש נפרדת ---
             st.write("🔽 **שלב 1: חיפוש במלאי**")
             search_pull_text = st.text_input("הקלד כאן כדי לפתוח מקלדת ולסנן", key="pull_search")
             
@@ -368,7 +367,7 @@ else:
             st.warning("המחסן ריק.")
 
     # ==========================================
-    # 5. ניהול מחסנים
+    # 5. ניהול מחסנים (עם אישור מחיקה!)
     # ==========================================
     elif choice_key == "warehouses":
         with st.form("new_wh"):
@@ -377,13 +376,36 @@ else:
                 db.collection("Warehouses").add({"name": n})
                 log_action("הוספת מחסן", n)
                 st.rerun()
+        
+        st.divider()
         for w in db.collection("Warehouses").stream():
             c1, c2 = st.columns([4,1])
             c1.info(w.to_dict()['name'])
-            if c2.button("🗑️", key=w.id): db.collection("Warehouses").document(w.id).delete(); st.rerun()
+            
+            # כפתור המחיקה רק מדליק "דגל מחיקה" בזיכרון
+            if c2.button("🗑️", key=f"btn_del_wh_{w.id}"):
+                st.session_state[f"del_wh_{w.id}"] = True
+                st.rerun()
+            
+            # בדיקה: האם יש דגל מחיקה פעיל למחסן הזה?
+            if st.session_state.get(f"del_wh_{w.id}", False):
+                st.error(f"למחוק את {w.to_dict()['name']}? הפריטים יועברו למחסן זמני.")
+                col_yes, col_no = st.columns(2)
+                if col_yes.button("✅ כן, מחק", key=f"yes_wh_{w.id}"):
+                    # העברת פריטים למחסן זמני ומחיקה
+                    for i in db.collection("Inventory").where("warehouse", "==", w.to_dict()['name']).stream():
+                        db.collection("Inventory").document(i.id).update({"warehouse": "מחסן זמני"})
+                    db.collection("Warehouses").document(w.id).delete()
+                    log_action("מחיקת מחסן", w.to_dict()['name'])
+                    del st.session_state[f"del_wh_{w.id}"] # ניקוי הדגל
+                    st.rerun()
+                
+                if col_no.button("❌ ביטול", key=f"no_wh_{w.id}"):
+                    del st.session_state[f"del_wh_{w.id}"] # ניקוי הדגל
+                    st.rerun()
 
     # ==========================================
-    # 6. ניהול פריטים
+    # 6. ניהול פריטים (עם אישור מחיקה!)
     # ==========================================
     elif choice_key == "items":
         with st.expander("📂 ייבוא פריטים מאקסל/CSV"):
@@ -395,11 +417,7 @@ else:
                     existing_skus = {doc.to_dict().get('internal_sku') for doc in db.collection("Items").stream()}
                     added, skipped = 0, 0
                     
-                    progress_bar = st.progress(0)
-                    total_rows = len(df)
-                    
                     for index, row in df.iterrows():
-                        progress_bar.progress((index + 1) / total_rows)
                         desc = str(row['description']).strip()
                         int_sku = str(row['internal_sku']).strip()
                         man_sku = str(row.get('manufacturer_sku', '')).strip()
@@ -413,7 +431,7 @@ else:
                         existing_skus.add(int_sku)
                         added += 1
                     
-                    st.success(f"✅ הסתיים! נוספו: {added} | דולגו: {skipped}")
+                    st.success(f"✅ נוספו: {added} | דולגו: {skipped}")
                     if added > 0: st.balloons()
                 except Exception as e: st.error(f"שגיאה: {e}")
 
@@ -451,7 +469,24 @@ else:
                 it = i.to_dict()
                 cols = st.columns([4, 1, 1])
                 cols[0].write(f"🔹 {it['description']} ({it['internal_sku']})")
-                if cols[1].button("🗑️", key=f"d_{i.id}"): db.collection("Items").document(i.id).delete(); st.rerun()
+                
+                # --- מנגנון מחיקה בטוח ---
+                if cols[1].button("🗑️", key=f"btn_del_it_{i.id}"):
+                    st.session_state[f"del_it_{i.id}"] = True
+                    st.rerun()
+                
+                if st.session_state.get(f"del_it_{i.id}", False):
+                    st.error(f"למחוק את {it['description']}?")
+                    cy, cn = st.columns(2)
+                    if cy.button("כן", key=f"yes_it_{i.id}"):
+                        db.collection("Items").document(i.id).delete()
+                        log_action("מחיקת פריט", it['description'])
+                        del st.session_state[f"del_it_{i.id}"]
+                        st.rerun()
+                    if cn.button("ביטול", key=f"no_it_{i.id}"):
+                        del st.session_state[f"del_it_{i.id}"]
+                        st.rerun()
+
                 if cols[2].button("✏️", key=f"e_{i.id}"): st.session_state['edit_item_id'] = i.id; st.rerun()
 
     # ==========================================
@@ -504,9 +539,22 @@ else:
                     st.success("עודכן")
                     st.rerun()
                 
-                if c2.button("מחק משתמש", key=f"delu_{u.id}"):
-                    db.collection("Users").document(u.id).delete()
+                # מנגנון מחיקת משתמש בטוח
+                if c2.button("מחק משתמש", key=f"btn_del_u_{u.id}"):
+                    st.session_state[f"del_u_{u.id}"] = True
                     st.rerun()
+                
+                if st.session_state.get(f"del_u_{u.id}", False):
+                    st.error("למחוק משתמש זה?")
+                    uy, un = st.columns(2)
+                    if uy.button("כן", key=f"yes_u_{u.id}"):
+                        db.collection("Users").document(u.id).delete()
+                        log_action("מחיקת משתמש", u.id)
+                        del st.session_state[f"del_u_{u.id}"]
+                        st.rerun()
+                    if un.button("ביטול", key=f"no_u_{u.id}"):
+                        del st.session_state[f"del_u_{u.id}"]
+                        st.rerun()
 
     # ==========================================
     # 8. יומן פעילות
