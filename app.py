@@ -156,7 +156,7 @@ else:
     st.title(f"📦 {menu[choice_key]}")
 
     # ==========================================
-    # 1. חיפוש ופעולות
+    # 1. חיפוש ופעולות (עיצוב חדש ומינימליסטי)
     # ==========================================
     if choice_key == "search":
         search_q = st.text_input("🔍 חפש פריט (שם או מק\"ט)")
@@ -167,6 +167,7 @@ else:
         found_inventory = []
         found_item_ids_in_inv = set()
         
+        # לוגיקת חיפוש
         if search_q:
             for doc in inv_stream:
                 d = doc.to_dict()
@@ -185,32 +186,47 @@ else:
                     if (search_q.lower() in data['description'].lower()) or (search_q in str(data['internal_sku'])):
                         found_catalog_only.append((item_id, data))
 
+            # --- הצגת תוצאות מלאי (החלק המעודכן) ---
             if found_inventory:
                 st.success(f"נמצאו {len(found_inventory)} פריטים במלאי")
                 for doc in found_inventory:
                     d = doc.to_dict()
                     sku_display = d.get('display_sku', '')
+                    
                     with st.container(border=True):
-                        c1, c2 = st.columns([3, 1])
-                        c1.markdown(f"**{d['item_name']}**")
+                        # חלוקה לעמודות: מידע רחב מימין, כפתורים צרים משמאל
+                        c_info, c_actions = st.columns([4, 1.5])
                         
-                        # --- תיקון 1: תצוגת מיקום מלאה (שורה, עמודה, קומה) ---
-                        location_str = f"📍 {d['warehouse']} | שורה: {d.get('row', '-')} | עמ': {d.get('column', '-')} | קומה: {d.get('floor', '-')}"
+                        with c_info:
+                            st.markdown(f"**{d['item_name']}**")
+                            location_str = f"📍 {d['warehouse']} | שורה: {d.get('row', '-')} | עמ': {d.get('column', '-')} | קומה: {d.get('floor', '-')}"
+                            
+                            if sku_display:
+                                st.caption(f"🆔 {sku_display}")
+                            st.caption(f"{location_str} | כמות: **{d['quantity']}**")
                         
-                        if sku_display:
-                            c1.caption(f"🆔 {sku_display}")
-                            c1.caption(f"{location_str} | כמות: **{d['quantity']}**")
-                        else:
-                            c1.caption(f"{location_str} | כמות: **{d['quantity']}**")
-                        
-                        if c2.button("📤 משוך", key=f"p_{doc.id}"):
-                            st.session_state['active_action'] = {'type': 'pull', 'id': doc.id, 'name': d['item_name']}
-                            st.rerun()
-                        if st.session_state['user_role'] == "מנהל מלאי":
-                            if c2.button("🚚 הזז", key=f"m_{doc.id}"):
-                                st.session_state['active_action'] = {'type': 'move', 'id': doc.id, 'name': d['item_name']}
-                                st.rerun()
+                        with c_actions:
+                            # בדיקת הרשאות להצגת כפתורים
+                            is_manager = st.session_state['user_role'] == "מנהל מלאי"
+                            
+                            if is_manager:
+                                # למנהל: שני כפתורים צמודים
+                                b1, b2 = st.columns(2)
+                                with b1:
+                                    if st.button("📤", key=f"pull_{doc.id}", help="משיכת מלאי"):
+                                        st.session_state['active_action'] = {'type': 'pull', 'id': doc.id, 'name': d['item_name']}
+                                        st.rerun()
+                                with b2:
+                                    if st.button("🚚", key=f"move_{doc.id}", help="העברת פריט"):
+                                        st.session_state['active_action'] = {'type': 'move', 'id': doc.id, 'name': d['item_name']}
+                                        st.rerun()
+                            else:
+                                # ליוזר רגיל: כפתור משיכה בלבד
+                                if st.button("📤", key=f"pull_{doc.id}", help="משיכת מלאי", use_container_width=True):
+                                    st.session_state['active_action'] = {'type': 'pull', 'id': doc.id, 'name': d['item_name']}
+                                    st.rerun()
             
+            # --- הצגת תוצאות קטלוג ---
             if found_catalog_only:
                 st.info(f"נמצאו {len(found_catalog_only)} פריטים בקטלוג (ללא מלאי)")
                 for item_id, data in found_catalog_only:
@@ -224,10 +240,15 @@ else:
         elif not search_q:
              st.info("הקלד לחיפוש...")
 
+        # --- אזור ביצוע הפעולות (נפתח לאחר לחיצה על האייקונים) ---
         if st.session_state['active_action']:
             action = st.session_state['active_action']
             st.divider()
-            st.info(f"מבצע פעולה על: **{action['name']}**")
+            
+            # כותרת עם אייקון מתאים
+            icon = "📤" if action['type'] == 'pull' else "🚚"
+            txt = "משיכה" if action['type'] == 'pull' else "העברה"
+            st.markdown(f"### {icon} {txt}: **{action['name']}**")
             
             if action['type'] == 'pull':
                 with st.form("act_pull"):
@@ -249,9 +270,11 @@ else:
                     whs_list = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
                     new_wh = st.selectbox("לאן להעביר?", whs_list)
                     st.caption("מיקום חדש:")
-                    nr = st.number_input("שורה (מספר)", min_value=1, step=1, value=1)
-                    nc = st.text_input("עמודה (טקסט)")
-                    nf = st.number_input("קומה (מספר)", min_value=1, step=1, value=1)
+                    
+                    c_r, c_c, c_f = st.columns(3)
+                    nr = c_r.number_input("שורה", min_value=1, step=1, value=1)
+                    nc = c_c.text_input("עמודה")
+                    nf = c_f.number_input("קומה", min_value=1, step=1, value=1)
                     
                     if st.form_submit_button("בצע העברה"):
                         db.collection("Inventory").document(action['id']).update({
@@ -262,7 +285,7 @@ else:
                         st.session_state['active_action'] = None
                         st.rerun()
             
-            if st.button("ביטול פעולה"):
+            if st.button("ביטול פעולה", use_container_width=True):
                 st.session_state['active_action'] = None
                 st.rerun()
 
@@ -277,8 +300,6 @@ else:
              r = req.to_dict()
              with st.container(border=True):
                  st.write(f"**{r['user_email']}** מבקש **{r['quantity']}** יח' של **{r['item_name']}**")
-                 
-                 # --- תיקון 2: הוספת סיבת המשיכה לתצוגה ---
                  if r.get('reason'):
                      st.info(f"📝 סיבה: {r['reason']}")
                  else:
@@ -351,13 +372,9 @@ else:
     # ==========================================
     elif choice_key == "pull":
         inv = db.collection("Inventory").where("quantity", ">", 0).stream()
-        
-        # --- תיקון 3: תצוגה מורחבת בבחירת פריט למשיכה ---
-        # בניית רשימה שכוללת שם, מחסן, מיקום מלא וכמות
         opts = {}
         for d in inv:
             data = d.to_dict()
-            # יצירת מחרוזת תצוגה עשירה
             label = f"{data['item_name']} | {data['warehouse']} (שורה {data.get('row','-')} עמ' {data.get('column','-')}) | כמות: {data['quantity']}"
             opts[label] = d.id
 
@@ -376,7 +393,6 @@ else:
                     q = st.number_input("כמות", min_value=1, step=1, value=1)
                     rs = st.text_input("סיבה / שרוול")
                     if st.form_submit_button("שלח בקשה"):
-                        # חילוץ השם הנקי (עד הקו המפריד הראשון)
                         item_clean_name = k.split('|')[0].strip()
                         db.collection("Requests").add({
                             "user_email": st.session_state['user_email'], 
@@ -425,7 +441,7 @@ else:
                     st.rerun()
 
     # ==========================================
-    # 6. ניהול פריטים (משודרג - תומך עברית באקסל)
+    # 6. ניהול פריטים (עם ייבוא חכם)
     # ==========================================
     elif choice_key == "items":
         with st.expander("📂 ייבוא פריטים מאקסל/CSV"):
@@ -434,69 +450,50 @@ else:
             
             if uploaded_file and st.button("התחל טעינה"):
                 try:
-                    # 1. ניסיון קריאה חכם (UTF-8 או עברית)
                     if uploaded_file.name.endswith('.csv'):
                         try:
                             df = pd.read_csv(uploaded_file, encoding='utf-8')
                         except UnicodeDecodeError:
-                            uploaded_file.seek(0) # חזרה לתחילת הקובץ
-                            df = pd.read_csv(uploaded_file, encoding='windows-1255') # קידוד עברי של ווינדוס
+                            uploaded_file.seek(0)
+                            df = pd.read_csv(uploaded_file, encoding='windows-1255')
                     else:
                         df = pd.read_excel(uploaded_file)
 
-                    # 2. ניקוי שמות העמודות (הסרת רווחים והמרה לאותיות קטנות)
                     df.columns = [c.strip().lower() for c in df.columns]
-                    
-                    # 3. מילון תרגום כותרות (מאפשר גם עברית וגם אנגלית)
                     column_map = {
-                        'תיאור': 'description',
-                        'שם פריט': 'description',
-                        'מקט': 'internal_sku',
-                        'מק"ט': 'internal_sku',
-                        'מק\"ט': 'internal_sku',
-                        'מקט רשות': 'internal_sku',
-                        'יצרן': 'manufacturer_sku',
-                        'מקט יצרן': 'manufacturer_sku'
+                        'תיאור': 'description', 'שם פריט': 'description',
+                        'מקט': 'internal_sku', 'מק"ט': 'internal_sku', 'מק\"ט': 'internal_sku', 'מקט רשות': 'internal_sku',
+                        'יצרן': 'manufacturer_sku', 'מקט יצרן': 'manufacturer_sku'
                     }
                     df.rename(columns=column_map, inplace=True)
 
-                    # בדיקת תקינות
                     if 'description' not in df.columns or 'internal_sku' not in df.columns:
-                        st.error(f"שגיאה בכותרות הקובץ! המערכת זיהתה: {list(df.columns)}")
+                        st.error(f"שגיאה בכותרות הקובץ! זוהה: {list(df.columns)}")
                         st.stop()
 
                     existing_skus = {doc.to_dict().get('internal_sku') for doc in db.collection("Items").stream()}
                     added, skipped = 0, 0
-                    
                     progress_bar = st.progress(0)
                     total_rows = len(df)
 
                     for index, row in df.iterrows():
                         desc = str(row['description']).strip()
                         int_sku = str(row['internal_sku']).strip()
-                        
-                        # טיפול במק"ט יצרן (אם לא קיים)
                         man_sku = ""
                         if 'manufacturer_sku' in row:
                             val = str(row['manufacturer_sku']).strip()
-                            if val.lower() != 'nan' and val.lower() != 'none':
-                                man_sku = val
+                            if val.lower() != 'nan' and val.lower() != 'none': man_sku = val
                         
                         if int_sku in existing_skus or not int_sku or int_sku == 'nan':
                             skipped += 1
                             continue
                         
-                        db.collection("Items").add({
-                            "description": desc, 
-                            "internal_sku": int_sku, 
-                            "manufacturer_sku": man_sku
-                        })
+                        db.collection("Items").add({"description": desc, "internal_sku": int_sku, "manufacturer_sku": man_sku})
                         existing_skus.add(int_sku)
                         added += 1
                         progress_bar.progress((index + 1) / total_rows)
                     
-                    st.success(f"✅ טעינה הסתיימה: {added} נוספו | {skipped} דולגו (כפולים/ריקים)")
-                    
+                    st.success(f"✅ טעינה הסתיימה: {added} נוספו | {skipped} דולגו")
                 except Exception as e:
                     st.error(f"שגיאה בקריאת הקובץ: {e}")
 
@@ -556,7 +553,6 @@ else:
                         st.rerun()
 
                 if cols[2].button("✏️", key=f"e_{i.id}"): st.session_state['edit_item_id'] = i.id; st.rerun()
-                     
 
     # ==========================================
     # 7. ניהול משתמשים
