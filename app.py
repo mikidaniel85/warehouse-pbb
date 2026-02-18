@@ -425,34 +425,80 @@ else:
                     st.rerun()
 
     # ==========================================
-    # 6. ניהול פריטים
+    # 6. ניהול פריטים (משודרג - תומך עברית באקסל)
     # ==========================================
     elif choice_key == "items":
         with st.expander("📂 ייבוא פריטים מאקסל/CSV"):
-            st.info("כותרות חובה: description, internal_sku")
+            st.info("כותרות נתמכות: description (תיאור), internal_sku (מק\"ט), manufacturer_sku (יצרן)")
             uploaded_file = st.file_uploader("גרור לכאן קובץ", type=['csv', 'xlsx'])
+            
             if uploaded_file and st.button("התחל טעינה"):
                 try:
-                    df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+                    # 1. ניסיון קריאה חכם (UTF-8 או עברית)
+                    if uploaded_file.name.endswith('.csv'):
+                        try:
+                            df = pd.read_csv(uploaded_file, encoding='utf-8')
+                        except UnicodeDecodeError:
+                            uploaded_file.seek(0) # חזרה לתחילת הקובץ
+                            df = pd.read_csv(uploaded_file, encoding='windows-1255') # קידוד עברי של ווינדוס
+                    else:
+                        df = pd.read_excel(uploaded_file)
+
+                    # 2. ניקוי שמות העמודות (הסרת רווחים והמרה לאותיות קטנות)
+                    df.columns = [c.strip().lower() for c in df.columns]
+                    
+                    # 3. מילון תרגום כותרות (מאפשר גם עברית וגם אנגלית)
+                    column_map = {
+                        'תיאור': 'description',
+                        'שם פריט': 'description',
+                        'מקט': 'internal_sku',
+                        'מק"ט': 'internal_sku',
+                        'מק\"ט': 'internal_sku',
+                        'מקט רשות': 'internal_sku',
+                        'יצרן': 'manufacturer_sku',
+                        'מקט יצרן': 'manufacturer_sku'
+                    }
+                    df.rename(columns=column_map, inplace=True)
+
+                    # בדיקת תקינות
+                    if 'description' not in df.columns or 'internal_sku' not in df.columns:
+                        st.error(f"שגיאה בכותרות הקובץ! המערכת זיהתה: {list(df.columns)}")
+                        st.stop()
+
                     existing_skus = {doc.to_dict().get('internal_sku') for doc in db.collection("Items").stream()}
                     added, skipped = 0, 0
                     
+                    progress_bar = st.progress(0)
+                    total_rows = len(df)
+
                     for index, row in df.iterrows():
                         desc = str(row['description']).strip()
                         int_sku = str(row['internal_sku']).strip()
-                        man_sku = str(row.get('manufacturer_sku', '')).strip()
-                        if man_sku == 'nan': man_sku = ""
                         
-                        if int_sku in existing_skus:
+                        # טיפול במק"ט יצרן (אם לא קיים)
+                        man_sku = ""
+                        if 'manufacturer_sku' in row:
+                            val = str(row['manufacturer_sku']).strip()
+                            if val.lower() != 'nan' and val.lower() != 'none':
+                                man_sku = val
+                        
+                        if int_sku in existing_skus or not int_sku or int_sku == 'nan':
                             skipped += 1
                             continue
                         
-                        db.collection("Items").add({"description": desc, "internal_sku": int_sku, "manufacturer_sku": man_sku})
+                        db.collection("Items").add({
+                            "description": desc, 
+                            "internal_sku": int_sku, 
+                            "manufacturer_sku": man_sku
+                        })
                         existing_skus.add(int_sku)
                         added += 1
+                        progress_bar.progress((index + 1) / total_rows)
                     
-                    st.success(f"✅ נוספו: {added} | דולגו: {skipped}")
-                except Exception as e: st.error(f"שגיאה: {e}")
+                    st.success(f"✅ טעינה הסתיימה: {added} נוספו | {skipped} דולגו (כפולים/ריקים)")
+                    
+                except Exception as e:
+                    st.error(f"שגיאה בקריאת הקובץ: {e}")
 
         st.divider()
         manage_search = st.text_input("🔍 חפש ברשימה", placeholder="שם או מק\"ט")
@@ -460,8 +506,12 @@ else:
         with st.expander("➕ הוסף ידנית"):
             d, r, y = st.text_input("תיאור"), st.text_input("מק\"ט רשות"), st.text_input("יצרן")
             if st.button("שמור חדש"):
-                if list(db.collection("Items").where("internal_sku", "==", r).stream()): st.error("מק\"ט קיים!")
-                else: db.collection("Items").add({"description": d, "internal_sku": r, "manufacturer_sku": y}); st.rerun()
+                if list(db.collection("Items").where("internal_sku", "==", r).stream()): 
+                    st.error("מק\"ט קיים!")
+                else: 
+                    db.collection("Items").add({"description": d, "internal_sku": r, "manufacturer_sku": y})
+                    st.success("נוסף!")
+                    st.rerun()
         
         st.write("---")
 
@@ -506,6 +556,7 @@ else:
                         st.rerun()
 
                 if cols[2].button("✏️", key=f"e_{i.id}"): st.session_state['edit_item_id'] = i.id; st.rerun()
+                     
 
     # ==========================================
     # 7. ניהול משתמשים
