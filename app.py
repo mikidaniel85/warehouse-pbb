@@ -156,7 +156,7 @@ else:
     st.title(f"📦 {menu[choice_key]}")
 
     # ==========================================
-    # 1. חיפוש ופעולות (פריסה אופקית + טפסים במקום)
+    # 1. חיפוש ופעולות (פריסה מתוקנת + כפתורי קליטה לחדשים)
     # ==========================================
     if choice_key == "search":
         search_q = st.text_input("🔍 חפש פריט (שם או מק\"ט)")
@@ -167,7 +167,6 @@ else:
         found_inventory = []
         found_item_ids_in_inv = set()
         
-        # לוגיקת חיפוש
         if search_q:
             for doc in inv_stream:
                 d = doc.to_dict()
@@ -177,7 +176,7 @@ else:
                 
                 if (search_q.lower() in d['item_name'].lower()) or (search_q in str(sku)):
                     d['display_sku'] = sku
-                    d['man_sku'] = catalog_data.get('manufacturer_sku', '') # שליפת מק"ט יצרן
+                    d['man_sku'] = catalog_data.get('manufacturer_sku', '')
                     found_inventory.append(doc)
                     found_item_ids_in_inv.add(item_id)
 
@@ -187,7 +186,7 @@ else:
                     if (search_q.lower() in data['description'].lower()) or (search_q in str(data['internal_sku'])):
                         found_catalog_only.append((item_id, data))
 
-            # --- הצגת תוצאות מלאי ---
+            # --- הצגת תוצאות: מלאי קיים ---
             if found_inventory:
                 st.success(f"נמצאו {len(found_inventory)} פריטים במלאי")
                 for doc in found_inventory:
@@ -196,12 +195,11 @@ else:
                     man_sku_display = d.get('man_sku', '')
                     
                     with st.container(border=True):
-                        # חלוקה לעמודות: מידע רחב מימין, כפתורים צרים משמאל
-                        c_info, c_actions = st.columns([3.5, 1.5])
+                        # שינוי יחס עמודות: יותר מקום לכפתורים (2) כדי שלא יישברו שורה
+                        c_info, c_actions = st.columns([3, 2])
                         
                         with c_info:
                             st.markdown(f"**{d['item_name']}**")
-                            # הצגת מק"טים
                             skus_text = ""
                             if sku_display: skus_text += f"🆔 {sku_display} "
                             if man_sku_display: skus_text += f"🏭 {man_sku_display}"
@@ -212,9 +210,8 @@ else:
                         
                         with c_actions:
                             is_manager = st.session_state['user_role'] == "מנהל מלאי"
-                            
-                            # יצירת עמודות פנימיות לכפתורים שיהיו אחד ליד השני
                             if is_manager:
+                                # שימוש ב-3 עמודות פנימיות כדי להכריח אותם להיות בשורה
                                 b1, b2, b3 = st.columns(3)
                                 with b1:
                                     if st.button("📤", key=f"pull_{doc.id}", help="משיכה"):
@@ -224,31 +221,27 @@ else:
                                     if st.button("🚚", key=f"move_{doc.id}", help="העברה"):
                                         st.session_state['active_action'] = {'type': 'move', 'id': doc.id, 'name': d['item_name']}
                                         st.rerun()
-                                with b3: # קיצור דרך לקליטה (חדש!)
-                                    if st.button("📥", key=f"add_{doc.id}", help="קליטה מהירה (הוספה למלאי)"):
-                                        st.session_state['active_action'] = {'type': 'add', 'id': doc.id, 'name': d['item_name']}
+                                with b3:
+                                    if st.button("📥", key=f"add_{doc.id}", help="הוספת כמות (קליטה)"):
+                                        st.session_state['active_action'] = {'type': 'add_existing', 'id': doc.id, 'name': d['item_name']}
                                         st.rerun()
                             else:
                                 if st.button("📤", key=f"pull_{doc.id}", help="משיכה", use_container_width=True):
                                     st.session_state['active_action'] = {'type': 'pull', 'id': doc.id, 'name': d['item_name']}
                                     st.rerun()
 
-                    # --- אזור הטופס שנפתח (Inline) ---
-                    # הבדיקה מתבצעת בתוך הלולאה, כך שהטופס יופיע מיד מתחת לשורה הרלוונטית
+                    # טפסים (Inline) לפריטים קיימים
                     if st.session_state['active_action'] and st.session_state['active_action']['id'] == doc.id:
                         action = st.session_state['active_action']
-                        
-                        # מסגרת ויזואלית לטופס
                         with st.container(border=True):
-                            # כפתור סגירה מהיר
                             if st.button("✖️ סגור", key=f"close_{doc.id}"):
                                 st.session_state['active_action'] = None
                                 st.rerun()
 
                             if action['type'] == 'pull':
-                                st.markdown(f"**משיכת פריט:** {action['name']}")
+                                st.markdown(f"**משיכה:** {action['name']}")
                                 with st.form(f"form_pull_{doc.id}"):
-                                    qty = st.number_input("כמות למשיכה", min_value=1, step=1, value=1)
+                                    qty = st.number_input("כמות", min_value=1, step=1, value=1)
                                     reason = st.text_input("סיבה / שרוול")
                                     if st.form_submit_button("שלח בקשה"):
                                         db.collection("Requests").add({
@@ -262,15 +255,14 @@ else:
                                         st.rerun()
 
                             elif action['type'] == 'move':
-                                st.markdown(f"**העברת מיקום:** {action['name']}")
+                                st.markdown(f"**העברה:** {action['name']}")
                                 with st.form(f"form_move_{doc.id}"):
                                     whs_list = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
                                     new_wh = st.selectbox("מחסן יעד", whs_list)
-                                    c_r, c_c, c_f = st.columns(3)
-                                    nr = c_r.number_input("שורה", min_value=1, step=1, value=1)
-                                    nc = c_c.text_input("עמודה")
-                                    nf = c_f.number_input("קומה", min_value=1, step=1, value=1)
-                                    
+                                    c1, c2, c3 = st.columns(3)
+                                    nr = c1.number_input("שורה", min_value=1, step=1, value=1)
+                                    nc = c2.text_input("עמודה")
+                                    nf = c3.number_input("קומה", min_value=1, step=1, value=1)
                                     if st.form_submit_button("בצע העברה"):
                                         db.collection("Inventory").document(action['id']).update({
                                             "warehouse": new_wh, "row": str(nr), "column": nc, "floor": str(nf)
@@ -280,8 +272,8 @@ else:
                                         st.session_state['active_action'] = None
                                         st.rerun()
 
-                            elif action['type'] == 'add': # קליטה מהירה
-                                st.markdown(f"**הוספה למלאי (באותו מיקום):** {action['name']}")
+                            elif action['type'] == 'add_existing':
+                                st.markdown(f"**הוספת מלאי לאותו מיקום:** {action['name']}")
                                 with st.form(f"form_add_{doc.id}"):
                                     qty_add = st.number_input("כמות להוספה", min_value=1, step=1, value=1)
                                     if st.form_submit_button("עדכן מלאי"):
@@ -293,26 +285,73 @@ else:
                                         st.session_state['active_action'] = None
                                         st.rerun()
 
-            # --- הצגת תוצאות קטלוג ---
+            # --- הצגת תוצאות: רק בקטלוג (פריטים חדשים) ---
             if found_catalog_only:
-                st.info(f"נמצאו {len(found_catalog_only)} פריטים בקטלוג (ללא מלאי)")
+                st.info(f"נמצאו {len(found_catalog_only)} פריטים בקטלוג (ללא מיקום מוגדר)")
                 for item_id, data in found_catalog_only:
                     with st.container(border=True):
-                        st.markdown(f"**{data['description']}**")
+                        c_info, c_actions = st.columns([3, 2])
                         
-                        # הצגת מק"טים גם כאן
-                        skus_text = f"🆔 {data['internal_sku']}"
-                        if data.get('manufacturer_sku'): skus_text += f" | 🏭 {data['manufacturer_sku']}"
-                        st.caption(skus_text)
+                        with c_info:
+                            st.markdown(f"**{data['description']}**")
+                            skus_text = f"🆔 {data['internal_sku']}"
+                            if data.get('manufacturer_sku'): skus_text += f" | 🏭 {data['manufacturer_sku']}"
+                            st.caption(skus_text)
+                            st.caption("⚠️ טרם שויך למחסן")
                         
-                        st.caption("⚠️ אין מלאי (קיים בקטלוג)")
-            
+                        with c_actions:
+                            is_manager = st.session_state['user_role'] == "מנהל מלאי"
+                            if is_manager:
+                                # כפתור קליטה (הוספה) בלבד
+                                if st.button("📥 שייך למחסן", key=f"new_{item_id}", help="קליטה ראשונית למלאי"):
+                                    st.session_state['active_action'] = {'type': 'add_new', 'id': item_id, 'name': data['description']}
+                                    st.rerun()
+
+                    # טופס קליטה לפריט חדש (Inline)
+                    if st.session_state['active_action'] and st.session_state['active_action']['id'] == item_id:
+                        action = st.session_state['active_action']
+                        with st.container(border=True):
+                            if st.button("✖️ סגור", key=f"close_new_{item_id}"):
+                                st.session_state['active_action'] = None
+                                st.rerun()
+
+                            if action['type'] == 'add_new':
+                                st.markdown(f"**קליטה ראשונית:** {action['name']}")
+                                whs_list = [w.to_dict()['name'] for w in db.collection("Warehouses").stream()]
+                                
+                                if not whs_list:
+                                    st.error("חובה להגדיר מחסנים קודם!")
+                                else:
+                                    with st.form(f"form_new_{item_id}"):
+                                        wh = st.selectbox("בחר מחסן", whs_list)
+                                        c1, c2, c3 = st.columns(3)
+                                        r = c1.number_input("שורה", min_value=1, step=1, value=1)
+                                        c = c2.text_input("עמודה")
+                                        f = c3.number_input("קומה", min_value=1, step=1, value=1)
+                                        qty = st.number_input("כמות התחלתית", min_value=1, step=1, value=1)
+                                        
+                                        if st.form_submit_button("צור מיקום וקלוט מלאי"):
+                                            str_r, str_f = str(r), str(f)
+                                            # יצירת מזהה ייחודי למיקום
+                                            loc_id = f"{wh}_{str_r}_{c}_{str_f}_{item_id}"
+                                            
+                                            db.collection("Inventory").document(loc_id).set({
+                                                "item_name": action['name'], 
+                                                "warehouse": wh, 
+                                                "row": str_r, "column": c, "floor": str_f, 
+                                                "quantity": int(qty), 
+                                                "item_id": item_id
+                                            })
+                                            log_action("קליטה ראשונית", f"{qty} יח' של {action['name']} ל-{wh}")
+                                            st.success("הפריט שויך ונקלט בהצלחה!")
+                                            st.session_state['active_action'] = None
+                                            st.rerun()
+
             if not found_inventory and not found_catalog_only:
                  st.warning("לא נמצאו תוצאות.")
 
         elif not search_q:
              st.info("הקלד לחיפוש...")
-
 
     # ==========================================
     # 2. אישור משיכות
